@@ -5,6 +5,8 @@
 #include <kenshi/Damages.h>
 #include <kenshi/Dialogue.h>
 #include <kenshi/Faction.h>
+#include <kenshi/GameWorld.h>
+#include <kenshi/Globals.h>
 #include <kenshi/Kenshi.h>
 #include <kenshi/MedicalSystem.h>
 #include <kenshi/PlayerInterface.h>
@@ -34,7 +36,7 @@ const char* kDefaultTogglePanelKey = "D";
 const int kPanelLeft = 18;
 const int kPanelTop = 140;
 const int kPanelWidth = 360;
-const int kPanelExpandedHeight = 486;
+const int kPanelExpandedHeight = 548;
 const int kPanelCollapsedHeight = 42;
 const int kPanelViewportPadding = 16;
 const int kPanelDragThreshold = 3;
@@ -45,6 +47,8 @@ const float kForceDyingAliveBloodMargin = 1.0f;
 const float kProbablyDyingBloodMax = 50.0f;
 const float kLimbDamageFraction = 0.35f;
 const float kMinimumLimbDamageAmount = 5.0f;
+const char* kTeleportDestinationLabel = "Test Spot";
+const Ogre::Vector3 kTeleportDestinationCenter(-56164.4f, 1605.11f, 20653.6f);
 const float kFloatChangeEpsilon = 0.001f;
 
 enum LoggingLevel
@@ -128,6 +132,8 @@ MyGUI::Button* g_damageLeftArmButton = 0;
 MyGUI::Button* g_damageRightArmButton = 0;
 MyGUI::Button* g_damageLeftLegButton = 0;
 MyGUI::Button* g_damageRightLegButton = 0;
+MyGUI::TextBox* g_teleportSectionText = 0;
+MyGUI::Button* g_teleportSelectedToCameraButton = 0;
 MyGUI::TextBox* g_dangerousSectionText = 0;
 MyGUI::Button* g_forceDyingButton = 0;
 MyGUI::TextBox* g_statusText = 0;
@@ -1058,6 +1064,8 @@ void ResetPanelWidgetPointers()
     g_damageRightArmButton = 0;
     g_damageLeftLegButton = 0;
     g_damageRightLegButton = 0;
+    g_teleportSectionText = 0;
+    g_teleportSelectedToCameraButton = 0;
     g_dangerousSectionText = 0;
     g_forceDyingButton = 0;
     g_statusText = 0;
@@ -1800,6 +1808,53 @@ void SetActionButtonsEnabled(bool enabled)
     }
 }
 
+void SetSelectionActionButtonsEnabled(bool enabled)
+{
+    if (g_teleportSelectedToCameraButton)
+    {
+        g_teleportSelectedToCameraButton->setEnabled(enabled);
+    }
+}
+
+int GetSelectedCharacterCount(PlayerInterface* player)
+{
+    if (!player)
+    {
+        return 0;
+    }
+
+    int selectedCharacterCount = 0;
+
+    __try
+    {
+        const ogre_unordered_set<hand>::type& selectedCharacters = player->selectedCharacters;
+        ogre_unordered_set<hand>::type::const_iterator it = selectedCharacters.begin();
+        for (; it != selectedCharacters.end(); ++it)
+        {
+            if (it->getCharacter())
+            {
+                ++selectedCharacterCount;
+            }
+        }
+
+        if (selectedCharacterCount <= 0 && player->selectedCharacter.isValid() && player->selectedCharacter.getCharacter())
+        {
+            selectedCharacterCount = 1;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+
+    return selectedCharacterCount;
+}
+
+void UpdateSelectionActionButtons(PlayerInterface* player)
+{
+    SetSelectionActionButtonsEnabled(GetSelectedCharacterCount(player) > 0);
+}
+
 void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)
 {
     if (!g_targetNameText || !g_targetFactionText || !g_targetAlignmentText
@@ -1919,6 +1974,7 @@ void UpdateTargetInspection(PlayerInterface* player)
     }
 
     ApplyTargetSnapshotToUi(snapshot);
+    UpdateSelectionActionButtons(player);
     LogTargetSnapshotIfChanged(snapshot);
     g_lastTargetSnapshot = snapshot;
     g_hasLastTargetSnapshot = true;
@@ -2328,6 +2384,113 @@ bool TryApplyLimbDamage(
         if (appliedDamageOut)
         {
             *appliedDamageOut = damageAmount;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool TryTeleportSelectedCharactersToCamera(
+    PlayerInterface* player,
+    int* selectedCountOut,
+    int* teleportedCountOut,
+    Ogre::Vector3* destinationCenterOut)
+{
+    if (selectedCountOut)
+    {
+        *selectedCountOut = 0;
+    }
+    if (teleportedCountOut)
+    {
+        *teleportedCountOut = 0;
+    }
+    if (destinationCenterOut)
+    {
+        *destinationCenterOut = Ogre::Vector3(0.0f, 0.0f, 0.0f);
+    }
+
+    if (!player || !ou)
+    {
+        return false;
+    }
+
+    __try
+    {
+        const ogre_unordered_set<hand>::type& selectedCharacters = player->selectedCharacters;
+        int selectedCharacterCount = 0;
+
+        ogre_unordered_set<hand>::type::const_iterator countIt = selectedCharacters.begin();
+        for (; countIt != selectedCharacters.end(); ++countIt)
+        {
+            Character* character = countIt->getCharacter();
+            if (character)
+            {
+                ++selectedCharacterCount;
+            }
+        }
+
+        const bool useSelectedCharacterFallback =
+            selectedCharacterCount <= 0 && player->selectedCharacter.isValid() && player->selectedCharacter.getCharacter() != 0;
+        if (useSelectedCharacterFallback)
+        {
+            selectedCharacterCount = 1;
+        }
+
+        if (selectedCountOut)
+        {
+            *selectedCountOut = selectedCharacterCount;
+        }
+
+        const Ogre::Vector3 destinationCenter = kTeleportDestinationCenter;
+        if (destinationCenterOut)
+        {
+            *destinationCenterOut = destinationCenter;
+        }
+
+        Ogre::Vector3 resolvedDestination = destinationCenter;
+        if (ou)
+        {
+            Ogre::Vector3 validatedDestination = resolvedDestination;
+            if (ou->findValidSpawnPos(validatedDestination, resolvedDestination))
+            {
+                resolvedDestination = validatedDestination;
+            }
+        }
+
+        int teleportedCount = 0;
+
+        ogre_unordered_set<hand>::type::const_iterator teleportIt = selectedCharacters.begin();
+        for (; teleportIt != selectedCharacters.end(); ++teleportIt)
+        {
+            Character* character = teleportIt->getCharacter();
+            if (!character)
+            {
+                continue;
+            }
+
+            character->teleport(resolvedDestination - character->getPosition(), character->getOrientation());
+            character->setRagdollNavmeshSafePos();
+            ++teleportedCount;
+        }
+
+        if (useSelectedCharacterFallback)
+        {
+            Character* character = player->selectedCharacter.getCharacter();
+            if (character)
+            {
+                character->teleport(resolvedDestination - character->getPosition(), character->getOrientation());
+                character->setRagdollNavmeshSafePos();
+                ++teleportedCount;
+            }
+        }
+
+        if (teleportedCountOut)
+        {
+            *teleportedCountOut = teleportedCount;
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -2836,6 +2999,91 @@ void OnDamageRightLegButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton 
     }
 }
 
+void OnTeleportSelectedToCameraButtonClicked(MyGUI::Widget*)
+{
+    std::stringstream requested;
+    requested << "event=testkit_action_requested action=\"teleport_selected_to_test_spot\"";
+    LogInfoLine(requested.str());
+
+    if (!g_lastPlayerInterface)
+    {
+        LogInfoLine("event=testkit_action_result action=\"teleport_selected_to_test_spot\" success=false reason=\"no_player_interface\"");
+        SetStatusMessage("Teleport failed - player interface unavailable");
+        return;
+    }
+
+    int selectedCount = 0;
+    int teleportedCount = 0;
+    Ogre::Vector3 destinationCenter(0.0f, 0.0f, 0.0f);
+    if (!TryTeleportSelectedCharactersToCamera(
+            g_lastPlayerInterface,
+            &selectedCount,
+            &teleportedCount,
+            &destinationCenter))
+    {
+        LogInfoLine("event=testkit_action_result action=\"teleport_selected_to_test_spot\" success=false reason=\"apply_failed\"");
+        SetStatusMessage(std::string("Teleport to ") + kTeleportDestinationLabel + " failed - apply path unavailable");
+        return;
+    }
+
+    if (selectedCount <= 0)
+    {
+        LogInfoLine("event=testkit_action_result action=\"teleport_selected_to_test_spot\" success=false reason=\"no_selection\"");
+        SetStatusMessage(std::string("No selected characters to teleport to ") + kTeleportDestinationLabel);
+        return;
+    }
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"teleport_selected_to_test_spot\" success="
+           << (teleportedCount > 0 ? "true" : "false")
+           << " selected_count=" << selectedCount
+           << " teleported_count=" << teleportedCount
+           << " destination_x=" << destinationCenter.x
+           << " destination_y=" << destinationCenter.y
+           << " destination_z=" << destinationCenter.z;
+    if (teleportedCount <= 0)
+    {
+        result << " reason=\"not_observed_after_apply\"";
+    }
+    LogInfoLine(result.str());
+
+    if (teleportedCount == selectedCount)
+    {
+        std::stringstream status;
+        status << "Teleported " << teleportedCount << " selected character(s) to " << kTeleportDestinationLabel;
+        SetStatusMessage(status.str());
+    }
+    else if (teleportedCount > 0)
+    {
+        std::stringstream status;
+        status << "Teleported " << teleportedCount << " of " << selectedCount << " selected characters to "
+               << kTeleportDestinationLabel;
+        SetStatusMessage(status.str());
+    }
+    else
+    {
+        SetStatusMessage(std::string("Teleport to ") + kTeleportDestinationLabel + " requested - no selected characters moved");
+    }
+
+    UpdateTargetInspection(g_lastPlayerInterface);
+}
+
+void OnTeleportSelectedToCameraButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnTeleportSelectedToCameraButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnForceDyingButtonClicked(MyGUI::Widget*)
 {
     if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
@@ -3022,6 +3270,8 @@ bool HasAllPanelWidgets()
         && g_damageRightArmButton
         && g_damageLeftLegButton
         && g_damageRightLegButton
+        && g_teleportSectionText
+        && g_teleportSelectedToCameraButton
         && g_dangerousSectionText
         && g_forceDyingButton
         && g_statusText;
@@ -3056,6 +3306,7 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_noTargetText);
     ConfigureTextWidget(g_statesSectionText);
     ConfigureTextWidget(g_limbDamageSectionText);
+    ConfigureTextWidget(g_teleportSectionText);
     ConfigureTextWidget(g_dangerousSectionText);
     ConfigureTextWidget(g_statusText);
 
@@ -3068,6 +3319,7 @@ void InitializePanelWidgets()
     g_noTargetText->setCaption("No target - select a character");
     g_statesSectionText->setCaption("States");
     g_limbDamageSectionText->setCaption("Limb Damage");
+    g_teleportSectionText->setCaption("Teleport");
     g_dangerousSectionText->setCaption("Dangerous");
 
     g_forceUnconsciousButton->setCaption("Force Unconscious");
@@ -3076,10 +3328,12 @@ void InitializePanelWidgets()
     g_damageRightArmButton->setCaption("Damage Right Arm");
     g_damageLeftLegButton->setCaption("Damage Left Leg");
     g_damageRightLegButton->setCaption("Damage Right Leg");
+    g_teleportSelectedToCameraButton->setCaption(std::string("Teleport Selected To ") + kTeleportDestinationLabel);
     UpdateForceDyingButtonCaption();
     UpdateCollapseButtonCaption();
     RefreshStatusWidget();
     SetActionButtonsEnabled(false);
+    SetSelectionActionButtonsEnabled(false);
 
     g_collapseButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCollapseButtonClicked);
     g_forceUnconsciousButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceUnconsciousButtonPressed);
@@ -3088,6 +3342,7 @@ void InitializePanelWidgets()
     g_damageRightArmButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightArmButtonPressed);
     g_damageLeftLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftLegButtonPressed);
     g_damageRightLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightLegButtonPressed);
+    g_teleportSelectedToCameraButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportSelectedToCameraButtonPressed);
     g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
     g_headerFrame->eventMouseDrag += MyGUI::newDelegate(&OnHeaderMouseDrag);
@@ -3209,17 +3464,25 @@ void CreatePanelWidgets()
         "Kenshi_Button1",
         MyGUI::IntCoord(184, 362, 156, 28),
         MyGUI::Align::Default);
-    g_dangerousSectionText = g_panel->createWidget<MyGUI::TextBox>(
+    g_teleportSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
         MyGUI::IntCoord(14, 402, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
-    g_forceDyingButton = g_panel->createWidget<MyGUI::Button>(
+    g_teleportSelectedToCameraButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
         MyGUI::IntCoord(20, 424, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
+    g_dangerousSectionText = g_panel->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(14, 458, kPanelWidth - 28, 18),
+        MyGUI::Align::Default);
+    g_forceDyingButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(20, 480, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
     g_statusText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 458, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 514, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
 
     if (!HasAllPanelWidgets())
