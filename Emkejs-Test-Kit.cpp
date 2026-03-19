@@ -1663,8 +1663,8 @@ bool TryResolveStateSummary(Character* target, std::string* outLabel, bool* unco
     bool dying = false;
     __try
     {
-        const ProneState proneState = target->getProneState();
-        unconscious = target->isUnconcious() || proneState == PS_KO;
+        const ProneState proneState = target->_currentProneState;
+        unconscious = target->medical.unconcious || proneState == PS_KO;
         playingDead = (proneState == PS_PLAYING_DEAD);
         dying = target->isDead();
     }
@@ -2002,6 +2002,22 @@ void OnForceUnconsciousButtonClicked(MyGUI::Widget*)
     SetStatusMessage(status.str());
 }
 
+void OnForceUnconsciousButtonPressed(MyGUI::Widget* widget, int left, int top, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnForceUnconsciousButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnForcePlayingDeadButtonClicked(MyGUI::Widget*)
 {
     ReportShellOnlyAction("force_playing_dead", "Force Playing Dead");
@@ -2121,7 +2137,7 @@ void InitializePanelWidgets()
     SetActionButtonsEnabled(false);
 
     g_collapseButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCollapseButtonClicked);
-    g_forceUnconsciousButton->eventMouseButtonClick += MyGUI::newDelegate(&OnForceUnconsciousButtonClicked);
+    g_forceUnconsciousButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceUnconsciousButtonPressed);
     g_forcePlayingDeadButton->eventMouseButtonClick += MyGUI::newDelegate(&OnForcePlayingDeadButtonClicked);
     g_forceDyingButton->eventMouseButtonClick += MyGUI::newDelegate(&OnForceDyingButtonClicked);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
