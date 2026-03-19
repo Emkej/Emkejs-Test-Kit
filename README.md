@@ -49,8 +49,15 @@ After deploy, expected files:
 - [Kenshi install dir]\mods\Emkejs-Test-Kit\mod-config.json
 
 ## Config
-mod-config.json starts with the shared logging baseline:
-- enabled
-- debugLogging
-- debugSearchLogging
-- debugBindingLogging
+`mod-config.json` now drives the step 1 panel shell:
+- `enabled`
+- `toggle_panel_key`
+- `toggle_panel_ctrl`
+- `toggle_panel_shift`
+- `toggle_panel_alt`
+- `start_hidden`
+- `start_collapsed`
+- `logging_level`
+- `confirm_dangerous_actions`
+
+The in-game panel shell currently provides show/hide, collapse/expand, placeholder target summary text, shell action buttons, and an in-panel status line. Target inspection and real state forcing come in later plan steps.

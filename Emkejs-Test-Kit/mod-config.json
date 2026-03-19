@@ -1,6 +1,11 @@
 {
   "enabled": true,
-  "debugLogging": false,
-  "debugSearchLogging": false,
-  "debugBindingLogging": false
+  "toggle_panel_key": "D",
+  "toggle_panel_ctrl": true,
+  "toggle_panel_shift": true,
+  "toggle_panel_alt": false,
+  "start_hidden": false,
+  "start_collapsed": false,
+  "logging_level": "info",
+  "confirm_dangerous_actions": true
 }
