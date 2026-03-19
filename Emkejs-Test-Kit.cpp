@@ -38,6 +38,9 @@ const int kPanelViewportPadding = 16;
 const int kPanelDragThreshold = 3;
 const DWORD kDangerArmTimeoutMs = 3000;
 const float kForceUnconsciousDurationSeconds = 30.0f;
+const float kForceDyingBloodOffset = 8.0f;
+const float kForceDyingAliveBloodMargin = 1.0f;
+const float kProbablyDyingBloodMax = 50.0f;
 
 enum LoggingLevel
 {
@@ -66,6 +69,7 @@ struct TargetSnapshot
     bool unconscious;
     bool playingDead;
     bool dying;
+    bool dead;
 };
 
 std::string g_configPath;
@@ -263,6 +267,7 @@ void ResetTargetSnapshot(TargetSnapshot* snapshot)
     snapshot->unconscious = false;
     snapshot->playingDead = false;
     snapshot->dying = false;
+    snapshot->dead = false;
 }
 
 bool AreTargetSnapshotsEqual(const TargetSnapshot& left, const TargetSnapshot& right)
@@ -277,7 +282,8 @@ bool AreTargetSnapshotsEqual(const TargetSnapshot& left, const TargetSnapshot& r
         && left.stateLabel == right.stateLabel
         && left.unconscious == right.unconscious
         && left.playingDead == right.playingDead
-        && left.dying == right.dying;
+        && left.dying == right.dying
+        && left.dead == right.dead;
 }
 
 bool TryResolveModConfigPath(std::string* outPath)
@@ -1651,9 +1657,15 @@ bool TryResolveAlignmentLabel(PlayerInterface* player, Character* target, std::s
     return true;
 }
 
-bool TryResolveStateSummary(Character* target, std::string* outLabel, bool* unconsciousOut, bool* playingDeadOut, bool* dyingOut)
+bool TryResolveStateSummary(
+    Character* target,
+    std::string* outLabel,
+    bool* unconsciousOut,
+    bool* playingDeadOut,
+    bool* dyingOut,
+    bool* deadOut)
 {
-    if (!target || !outLabel || !unconsciousOut || !playingDeadOut || !dyingOut)
+    if (!target || !outLabel || !unconsciousOut || !playingDeadOut || !dyingOut || !deadOut)
     {
         return false;
     }
@@ -1661,12 +1673,47 @@ bool TryResolveStateSummary(Character* target, std::string* outLabel, bool* unco
     bool unconscious = false;
     bool playingDead = false;
     bool dying = false;
+    bool dead = false;
+    bool recoveryComa = false;
     __try
     {
         const ProneState proneState = target->_currentProneState;
+        const bool deadByCharacter = target->isDead();
+        const bool deadByMedicalMethod = target->medical.isDead();
+        const bool deadByMedicalFlag = target->medical.dead;
+        dead = deadByCharacter || deadByMedicalMethod || deadByMedicalFlag;
+
         unconscious = target->medical.unconcious || proneState == PS_KO;
         playingDead = (proneState == PS_PLAYING_DEAD);
-        dying = target->isDead();
+        if (!dead && unconscious && !playingDead)
+        {
+            const bool isProbablyDying = target->medical.isProbablyDying();
+            const bool dyingByTrauma = target->medical.isInBloodlossTrauma();
+            const bool sub50Ko = target->medical.sub50KO;
+            const float bloodLevel = target->medical.blood;
+            const float pointOfNoReturn = target->medical.pointOfNoReturn();
+            const bool dyingByBloodThreshold = (bloodLevel <= pointOfNoReturn);
+            const bool dyingByProbablyLowBlood = (isProbablyDying && bloodLevel <= kProbablyDyingBloodMax);
+            const bool dyingByActiveBleed =
+                isProbablyDying
+                && (target->medical.currentBleedRate > 0.0f || target->medical.extraBloodLossFromBodyparts > 0.0f);
+            const bool recoveryComaByCannotWake = (!target->medical.canGetUpWakeUp() && sub50Ko);
+            const bool knockoutTimerElapsed = (target->medical.knockoutTimer <= 0.0f);
+
+            recoveryComa = recoveryComaByCannotWake
+                && knockoutTimerElapsed
+                && !isProbablyDying
+                && !dyingByBloodThreshold
+                && !dyingByTrauma
+                && !dyingByActiveBleed
+                && !dyingByProbablyLowBlood;
+
+            dying = dyingByBloodThreshold || sub50Ko;
+            if (recoveryComa)
+            {
+                dying = false;
+            }
+        }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -1676,10 +1723,19 @@ bool TryResolveStateSummary(Character* target, std::string* outLabel, bool* unco
     *unconsciousOut = unconscious;
     *playingDeadOut = playingDead;
     *dyingOut = dying;
+    *deadOut = dead;
 
-    if (dying)
+    if (dead)
+    {
+        *outLabel = "Dead";
+    }
+    else if (dying)
     {
         *outLabel = "Dying";
+    }
+    else if (recoveryComa)
+    {
+        *outLabel = "Recovery Coma";
     }
     else if (playingDead)
     {
@@ -1761,7 +1817,8 @@ void LogTargetSnapshotIfChanged(const TargetSnapshot& snapshot)
              << " state=\"" << snapshot.stateLabel << "\""
              << " unconscious=" << (snapshot.unconscious ? "true" : "false")
              << " playing_dead=" << (snapshot.playingDead ? "true" : "false")
-             << " dying=" << (snapshot.dying ? "true" : "false");
+             << " dying=" << (snapshot.dying ? "true" : "false")
+             << " dead=" << (snapshot.dead ? "true" : "false");
     }
     LogDebugLine(line.str());
 }
@@ -1799,12 +1856,14 @@ void BuildTargetSnapshot(PlayerInterface* player, Character* target, TargetSourc
             &snapshotOut->stateLabel,
             &snapshotOut->unconscious,
             &snapshotOut->playingDead,
-            &snapshotOut->dying))
+            &snapshotOut->dying,
+            &snapshotOut->dead))
     {
         snapshotOut->stateLabel = "Unknown";
         snapshotOut->unconscious = false;
         snapshotOut->playingDead = false;
         snapshotOut->dying = false;
+        snapshotOut->dead = false;
     }
 }
 
@@ -1885,6 +1944,239 @@ bool TryForceUnconscious(Character* target, bool alreadyUnconscious, float* knoc
     return true;
 }
 
+bool TryInvokeSelectedCharactersLayingLow(
+    PlayerInterface* player,
+    Character* target,
+    bool* attemptedOut,
+    bool* commandAcceptedOut)
+{
+    if (attemptedOut)
+    {
+        *attemptedOut = false;
+    }
+    if (commandAcceptedOut)
+    {
+        *commandAcceptedOut = false;
+    }
+
+    if (!player || !target)
+    {
+        return true;
+    }
+
+    __try
+    {
+        if (!target->isPlayerCharacter())
+        {
+            return true;
+        }
+
+        if (!player->selectedCharacter.isValid() || player->selectedCharacter.getCharacter() != target)
+        {
+            return true;
+        }
+
+        if (attemptedOut)
+        {
+            *attemptedOut = true;
+        }
+        if (commandAcceptedOut)
+        {
+            *commandAcceptedOut = player->selectedCharactersLayingLow();
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool TryForcePlayingDeadFallback(
+    Character* target,
+    bool alreadyUnconscious,
+    bool alreadyPlayingDead,
+    bool* knockedOutOut,
+    float* knockoutTimerOut)
+{
+    if (knockedOutOut)
+    {
+        *knockedOutOut = false;
+    }
+    if (knockoutTimerOut)
+    {
+        *knockoutTimerOut = 0.0f;
+    }
+
+    if (!target)
+    {
+        return false;
+    }
+
+    __try
+    {
+        target->playerWantsMeToGetUp = false;
+
+        if (!alreadyUnconscious && !alreadyPlayingDead)
+        {
+            MedicalSystem* medical = target->getMedical();
+            if (!medical)
+            {
+                return false;
+            }
+
+            medical->knockout(0.0f);
+
+            if (knockedOutOut)
+            {
+                *knockedOutOut = true;
+            }
+            if (knockoutTimerOut)
+            {
+                *knockoutTimerOut = medical->knockoutTimer;
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool TryForceDying(
+    Character* target,
+    bool alreadyUnconscious,
+    float* knockoutTimerOut,
+    float* bloodOut,
+    float* pointOfNoReturnOut,
+    bool* usedSub50KoOut,
+    float* currentBleedRateOut,
+    float* extraBloodLossOut,
+    bool* probablyDyingOut,
+    bool* canWakeOut,
+    bool* bloodlossTraumaOut)
+{
+    if (knockoutTimerOut)
+    {
+        *knockoutTimerOut = 0.0f;
+    }
+    if (bloodOut)
+    {
+        *bloodOut = 0.0f;
+    }
+    if (pointOfNoReturnOut)
+    {
+        *pointOfNoReturnOut = 0.0f;
+    }
+    if (usedSub50KoOut)
+    {
+        *usedSub50KoOut = false;
+    }
+    if (currentBleedRateOut)
+    {
+        *currentBleedRateOut = 0.0f;
+    }
+    if (extraBloodLossOut)
+    {
+        *extraBloodLossOut = 0.0f;
+    }
+    if (probablyDyingOut)
+    {
+        *probablyDyingOut = false;
+    }
+    if (canWakeOut)
+    {
+        *canWakeOut = false;
+    }
+    if (bloodlossTraumaOut)
+    {
+        *bloodlossTraumaOut = false;
+    }
+
+    if (!target)
+    {
+        return false;
+    }
+
+    __try
+    {
+        MedicalSystem* medical = target->getMedical();
+        if (!medical)
+        {
+            return false;
+        }
+
+        const float pointOfNoReturn = medical->pointOfNoReturn();
+        const float maxBlood = medical->getMaxBlood();
+        const float aliveFloor = -maxBlood + kForceDyingAliveBloodMargin;
+        float forcedBlood = pointOfNoReturn - kForceDyingBloodOffset;
+
+        if (!alreadyUnconscious)
+        {
+            medical->knockout(0.0f);
+        }
+
+        if (forcedBlood <= aliveFloor)
+        {
+            forcedBlood = aliveFloor;
+        }
+
+        medical->blood = forcedBlood;
+        medical->knockoutTimer = 0.0f;
+        medical->currentBleedRate = 1.0f;
+        medical->extraBloodLossFromBodyparts = 1.0f;
+        medical->bloodlossTrauma = true;
+        medical->reassessCollapseMode(false, true);
+        target->playerWantsMeToGetUp = false;
+
+        if (knockoutTimerOut)
+        {
+            *knockoutTimerOut = medical->knockoutTimer;
+        }
+        if (bloodOut)
+        {
+            *bloodOut = medical->blood;
+        }
+        if (pointOfNoReturnOut)
+        {
+            *pointOfNoReturnOut = pointOfNoReturn;
+        }
+        if (usedSub50KoOut)
+        {
+            *usedSub50KoOut = medical->sub50KO;
+        }
+        if (currentBleedRateOut)
+        {
+            *currentBleedRateOut = medical->currentBleedRate;
+        }
+        if (extraBloodLossOut)
+        {
+            *extraBloodLossOut = medical->extraBloodLossFromBodyparts;
+        }
+        if (probablyDyingOut)
+        {
+            *probablyDyingOut = medical->isProbablyDying();
+        }
+        if (canWakeOut)
+        {
+            *canWakeOut = medical->canGetUpWakeUp();
+        }
+        if (bloodlossTraumaOut)
+        {
+            *bloodlossTraumaOut = medical->isInBloodlossTrauma();
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
 void ReportShellOnlyAction(const char* actionId, const char* actionLabel)
 {
     LogActionRequested(actionId);
@@ -1927,7 +2219,7 @@ void OnForceUnconsciousButtonClicked(MyGUI::Widget*)
         return;
     }
 
-    if (g_lastTargetSnapshot.dying)
+    if (g_lastTargetSnapshot.dead)
     {
         std::stringstream result;
         result << "event=testkit_action_result action=\"force_unconscious\" success=false reason=\"target_dead\""
@@ -1967,12 +2259,14 @@ void OnForceUnconsciousButtonClicked(MyGUI::Widget*)
         bool unconscious = false;
         bool playingDead = false;
         bool dying = false;
+        bool dead = false;
         observedUnconscious = TryResolveStateSummary(
                 g_lastTargetSnapshot.target,
                 &stateLabel,
                 &unconscious,
                 &playingDead,
-                &dying)
+                &dying,
+                &dead)
             && unconscious;
     }
 
@@ -2020,11 +2314,176 @@ void OnForceUnconsciousButtonPressed(MyGUI::Widget* widget, int left, int top, M
 
 void OnForcePlayingDeadButtonClicked(MyGUI::Widget*)
 {
-    ReportShellOnlyAction("force_playing_dead", "Force Playing Dead");
+    const char* actionId = "force_playing_dead";
+    LogActionRequested(actionId);
+
+    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
+    {
+        LogInfoLine("event=testkit_action_result action=\"force_playing_dead\" success=false reason=\"no_target\"");
+        SetStatusMessage("No target - select a character");
+        return;
+    }
+
+    if (g_lastTargetSnapshot.dead)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"force_playing_dead\" success=false reason=\"target_dead\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Force Playing Dead failed - target is dead");
+        return;
+    }
+
+    const Character* const expectedTarget = g_lastTargetSnapshot.target;
+    const std::string targetName = g_lastTargetSnapshot.name;
+    const bool alreadyPlayingDead = g_lastTargetSnapshot.playingDead;
+    const bool alreadyUnconscious = g_lastTargetSnapshot.unconscious;
+
+    if (alreadyPlayingDead)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"force_playing_dead\" success=true"
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+               << " already_playing_dead=true";
+        LogInfoLine(result.str());
+        SetStatusMessage("Force Playing Dead confirmed for " + targetName);
+        return;
+    }
+
+    bool selectionPathAttempted = false;
+    bool selectionCommandAccepted = false;
+    if (!TryInvokeSelectedCharactersLayingLow(
+            g_lastPlayerInterface,
+            g_lastTargetSnapshot.target,
+            &selectionPathAttempted,
+            &selectionCommandAccepted))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"force_playing_dead\" success=false reason=\"selection_path_failed\""
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Force Playing Dead failed - selection path crashed");
+        return;
+    }
+
+    bool knockedOut = false;
+    float knockoutTimer = 0.0f;
+    if (!selectionCommandAccepted
+        && !TryForcePlayingDeadFallback(
+                g_lastTargetSnapshot.target,
+                alreadyUnconscious,
+                alreadyPlayingDead,
+                &knockedOut,
+                &knockoutTimer))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"force_playing_dead\" success=false reason=\"apply_failed\""
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Force Playing Dead failed - apply path unavailable");
+        return;
+    }
+
+    bool observedPlayingDead = false;
+    bool observedUnconscious = false;
+    if (g_lastPlayerInterface)
+    {
+        UpdateTargetInspection(g_lastPlayerInterface);
+        observedPlayingDead = g_hasLastTargetSnapshot
+            && g_lastTargetSnapshot.hasTarget
+            && g_lastTargetSnapshot.target == expectedTarget
+            && g_lastTargetSnapshot.playingDead;
+        observedUnconscious = g_hasLastTargetSnapshot
+            && g_lastTargetSnapshot.hasTarget
+            && g_lastTargetSnapshot.target == expectedTarget
+            && g_lastTargetSnapshot.unconscious;
+    }
+    else
+    {
+        std::string stateLabel;
+        bool unconscious = false;
+        bool playingDead = false;
+        bool dying = false;
+        bool dead = false;
+        if (TryResolveStateSummary(
+                g_lastTargetSnapshot.target,
+                &stateLabel,
+                &unconscious,
+                &playingDead,
+                &dying,
+                &dead))
+        {
+            observedPlayingDead = playingDead;
+            observedUnconscious = unconscious;
+        }
+    }
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"force_playing_dead\" success="
+           << (observedPlayingDead ? "true" : "false")
+           << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+           << " selection_path_attempted=" << (selectionPathAttempted ? "true" : "false")
+           << " selection_command_accepted=" << (selectionCommandAccepted ? "true" : "false")
+           << " fallback_knockout=" << (knockedOut ? "true" : "false")
+           << " observed_playing_dead=" << (observedPlayingDead ? "true" : "false")
+           << " observed_unconscious=" << (observedUnconscious ? "true" : "false")
+           << " knockout_timer=" << knockoutTimer;
+    if (!observedPlayingDead)
+    {
+        result << " reason=\"not_observed_after_apply\"";
+    }
+    LogInfoLine(result.str());
+
+    if (observedPlayingDead)
+    {
+        SetStatusMessage("Force Playing Dead applied to " + targetName);
+        return;
+    }
+
+    if (observedUnconscious)
+    {
+        SetStatusMessage("Force Playing Dead requested for " + targetName + " - waiting for recovery into play dead");
+        return;
+    }
+
+    SetStatusMessage("Force Playing Dead requested for " + targetName + " - no readback yet");
+}
+
+void OnForcePlayingDeadButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnForcePlayingDeadButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
 }
 
 void OnForceDyingButtonClicked(MyGUI::Widget*)
 {
+    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
+    {
+        LogInfoLine("event=testkit_action_result action=\"force_dying\" success=false reason=\"no_target\"");
+        SetStatusMessage("No target - select a character");
+        return;
+    }
+
+    if (g_lastTargetSnapshot.dead)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"force_dying\" success=false reason=\"target_dead\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Force Dying failed - target is already dead");
+        return;
+    }
+
     if (g_confirmDangerousActions && !g_forceDyingArmed)
     {
         g_forceDyingArmed = true;
@@ -2036,8 +2495,112 @@ void OnForceDyingButtonClicked(MyGUI::Widget*)
         return;
     }
 
+    LogActionRequested("force_dying");
+
+    const Character* const expectedTarget = g_lastTargetSnapshot.target;
+    const std::string targetName = g_lastTargetSnapshot.name;
+    const bool alreadyUnconscious = g_lastTargetSnapshot.unconscious;
     ClearForceDyingArm("confirmed", false);
-    ReportShellOnlyAction("force_dying", "Force Dying");
+
+    float knockoutTimer = 0.0f;
+    float bloodLevel = 0.0f;
+    float pointOfNoReturn = 0.0f;
+    bool usedSub50Ko = false;
+    float currentBleedRate = 0.0f;
+    float extraBloodLoss = 0.0f;
+    bool probablyDying = false;
+    bool canWake = false;
+    bool bloodlossTrauma = false;
+    if (!TryForceDying(
+            g_lastTargetSnapshot.target,
+            alreadyUnconscious,
+            &knockoutTimer,
+            &bloodLevel,
+            &pointOfNoReturn,
+            &usedSub50Ko,
+            &currentBleedRate,
+            &extraBloodLoss,
+            &probablyDying,
+            &canWake,
+            &bloodlossTrauma))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"force_dying\" success=false reason=\"apply_failed\""
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Force Dying failed - apply path unavailable");
+        return;
+    }
+
+    bool observedDying = false;
+    if (g_lastPlayerInterface)
+    {
+        UpdateTargetInspection(g_lastPlayerInterface);
+        observedDying = g_hasLastTargetSnapshot
+            && g_lastTargetSnapshot.hasTarget
+            && g_lastTargetSnapshot.target == expectedTarget
+            && g_lastTargetSnapshot.dying;
+    }
+    else
+    {
+        std::string stateLabel;
+        bool unconscious = false;
+        bool playingDead = false;
+        bool dying = false;
+        bool dead = false;
+        observedDying = TryResolveStateSummary(
+                g_lastTargetSnapshot.target,
+                &stateLabel,
+                &unconscious,
+                &playingDead,
+                &dying,
+                &dead)
+            && dying;
+    }
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"force_dying\" success="
+           << (observedDying ? "true" : "false")
+           << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+           << " observed_dying=" << (observedDying ? "true" : "false")
+           << " knockout_timer=" << knockoutTimer
+           << " blood=" << bloodLevel
+           << " point_of_no_return=" << pointOfNoReturn
+           << " used_sub50ko_fallback=" << (usedSub50Ko ? "true" : "false")
+           << " current_bleed_rate=" << currentBleedRate
+           << " extra_blood_loss=" << extraBloodLoss
+           << " probably_dying=" << (probablyDying ? "true" : "false")
+           << " can_wake=" << (canWake ? "true" : "false")
+           << " bloodloss_trauma=" << (bloodlossTrauma ? "true" : "false");
+    if (!observedDying)
+    {
+        result << " reason=\"not_observed_after_apply\"";
+    }
+    LogInfoLine(result.str());
+
+    if (observedDying)
+    {
+        SetStatusMessage("Force Dying applied to " + targetName);
+        return;
+    }
+
+    SetStatusMessage("Force Dying requested for " + targetName + " - no dying readback yet");
+}
+
+void OnForceDyingButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnForceDyingButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
 }
 
 void TickForceDyingArmTimeout()
@@ -2138,8 +2701,8 @@ void InitializePanelWidgets()
 
     g_collapseButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCollapseButtonClicked);
     g_forceUnconsciousButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceUnconsciousButtonPressed);
-    g_forcePlayingDeadButton->eventMouseButtonClick += MyGUI::newDelegate(&OnForcePlayingDeadButtonClicked);
-    g_forceDyingButton->eventMouseButtonClick += MyGUI::newDelegate(&OnForceDyingButtonClicked);
+    g_forcePlayingDeadButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForcePlayingDeadButtonPressed);
+    g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
     g_headerFrame->eventMouseDrag += MyGUI::newDelegate(&OnHeaderMouseDrag);
     g_headerFrame->eventMouseMove += MyGUI::newDelegate(&OnHeaderMouseMove);
