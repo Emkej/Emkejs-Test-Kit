@@ -37,6 +37,7 @@ const int kPanelCollapsedHeight = 42;
 const int kPanelViewportPadding = 16;
 const int kPanelDragThreshold = 3;
 const DWORD kDangerArmTimeoutMs = 3000;
+const float kForceUnconsciousDurationSeconds = 30.0f;
 
 enum LoggingLevel
 {
@@ -1833,7 +1834,7 @@ void UpdateTargetInspection(PlayerInterface* player)
     g_hasLastTargetSnapshot = true;
 }
 
-void ReportShellOnlyAction(const char* actionId, const char* actionLabel)
+void LogActionRequested(const char* actionId)
 {
     std::stringstream requested;
     requested << "event=testkit_action_requested action=\"" << actionId << "\"";
@@ -1843,6 +1844,50 @@ void ReportShellOnlyAction(const char* actionId, const char* actionLabel)
                   << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
     }
     LogInfoLine(requested.str());
+}
+
+bool TryForceUnconscious(Character* target, bool alreadyUnconscious, float* knockoutTimerOut)
+{
+    if (!target)
+    {
+        return false;
+    }
+
+    if (knockoutTimerOut)
+    {
+        *knockoutTimerOut = 0.0f;
+    }
+
+    __try
+    {
+        MedicalSystem* medical = target->getMedical();
+        if (!medical)
+        {
+            return false;
+        }
+
+        if (!alreadyUnconscious)
+        {
+            medical->knockout(0.0f);
+        }
+        medical->knockoutForceTimer(kForceUnconsciousDurationSeconds);
+
+        if (knockoutTimerOut)
+        {
+            *knockoutTimerOut = medical->knockoutTimer;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+void ReportShellOnlyAction(const char* actionId, const char* actionLabel)
+{
+    LogActionRequested(actionId);
 
     if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget)
     {
@@ -1872,7 +1917,89 @@ void OnCollapseButtonClicked(MyGUI::Widget*)
 
 void OnForceUnconsciousButtonClicked(MyGUI::Widget*)
 {
-    ReportShellOnlyAction("force_unconscious", "Force Unconscious");
+    const char* actionId = "force_unconscious";
+    LogActionRequested(actionId);
+
+    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
+    {
+        LogInfoLine("event=testkit_action_result action=\"force_unconscious\" success=false reason=\"no_target\"");
+        SetStatusMessage("No target - select a character");
+        return;
+    }
+
+    if (g_lastTargetSnapshot.dying)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"force_unconscious\" success=false reason=\"target_dead\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Force Unconscious failed - target is dead");
+        return;
+    }
+
+    const Character* const expectedTarget = g_lastTargetSnapshot.target;
+    const std::string targetName = g_lastTargetSnapshot.name;
+    const bool alreadyUnconscious = g_lastTargetSnapshot.unconscious;
+
+    float knockoutTimer = 0.0f;
+    if (!TryForceUnconscious(g_lastTargetSnapshot.target, alreadyUnconscious, &knockoutTimer))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"force_unconscious\" success=false reason=\"apply_failed\""
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Force Unconscious failed - apply path unavailable");
+        return;
+    }
+
+    bool observedUnconscious = false;
+    if (g_lastPlayerInterface)
+    {
+        UpdateTargetInspection(g_lastPlayerInterface);
+        observedUnconscious = g_hasLastTargetSnapshot
+            && g_lastTargetSnapshot.hasTarget
+            && g_lastTargetSnapshot.target == expectedTarget
+            && g_lastTargetSnapshot.unconscious;
+    }
+    else
+    {
+        std::string stateLabel;
+        bool unconscious = false;
+        bool playingDead = false;
+        bool dying = false;
+        observedUnconscious = TryResolveStateSummary(
+                g_lastTargetSnapshot.target,
+                &stateLabel,
+                &unconscious,
+                &playingDead,
+                &dying)
+            && unconscious;
+    }
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"force_unconscious\" success="
+           << (observedUnconscious ? "true" : "false")
+           << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+           << " already_unconscious=" << (alreadyUnconscious ? "true" : "false")
+           << " observed_unconscious=" << (observedUnconscious ? "true" : "false")
+           << " knockout_timer=" << knockoutTimer;
+    if (!observedUnconscious)
+    {
+        result << " reason=\"not_observed_after_apply\"";
+    }
+    LogInfoLine(result.str());
+
+    std::stringstream status;
+    if (observedUnconscious)
+    {
+        status << (alreadyUnconscious ? "Force Unconscious refreshed for " : "Force Unconscious applied to ")
+               << targetName;
+    }
+    else
+    {
+        status << "Force Unconscious requested for " << targetName << " - no KO readback yet";
+    }
+    SetStatusMessage(status.str());
 }
 
 void OnForcePlayingDeadButtonClicked(MyGUI::Widget*)
