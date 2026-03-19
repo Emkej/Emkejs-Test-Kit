@@ -1,4 +1,4 @@
-## Emkejs-Test-Kit (RE_Kenshi plugin)
+## Emkejs Test Kit (RE_Kenshi plugin)
 
 This repository is the starter scaffolding for the Emkejs-Test-Kit native RE_Kenshi plugin mod.
 
