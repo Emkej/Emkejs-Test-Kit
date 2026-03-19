@@ -9,7 +9,8 @@ param(
     [string]$KenshiPath = "",
     [string]$Configuration = "Release",
     [string]$Platform = "x64",
-    [string]$PlatformToolset = "v100"
+    [string]$PlatformToolset = "v100",
+    [switch]$Clean
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,7 +32,7 @@ if (Test-Path $LoadEnvScript) {
 }
 
 $Forward = @{}
-foreach ($k in @('ModName','ProjectFileName','OutputSubdir','DllName','ModFileName','ConfigFileName','KenshiPath','Configuration','Platform','PlatformToolset')) {
+foreach ($k in @('ModName','ProjectFileName','OutputSubdir','DllName','ModFileName','ConfigFileName','KenshiPath','Configuration','Platform','PlatformToolset','Clean')) {
     if ($PSBoundParameters.ContainsKey($k)) { $Forward[$k] = (Get-Variable -Name $k -ValueOnly) }
 }
 
