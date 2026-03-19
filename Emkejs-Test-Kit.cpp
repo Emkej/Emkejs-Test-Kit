@@ -1,12 +1,18 @@
 #include <Debug.h>
 
 #include <core/Functions.h>
+#include <kenshi/Character.h>
+#include <kenshi/Dialogue.h>
+#include <kenshi/Faction.h>
 #include <kenshi/Kenshi.h>
 #include <kenshi/PlayerInterface.h>
+#include <kenshi/RootObject.h>
 #include <kenshi/SaveManager.h>
 #include <mygui/MyGUI_Button.h>
 #include <mygui/MyGUI_Delegate.h>
 #include <mygui/MyGUI_Gui.h>
+#include <mygui/MyGUI_InputManager.h>
+#include <mygui/MyGUI_RenderManager.h>
 #include <mygui/MyGUI_TextBox.h>
 #include <mygui/MyGUI_Widget.h>
 
@@ -28,12 +34,37 @@ const int kPanelTop = 140;
 const int kPanelWidth = 360;
 const int kPanelExpandedHeight = 388;
 const int kPanelCollapsedHeight = 42;
+const int kPanelViewportPadding = 16;
+const int kPanelDragThreshold = 3;
 const DWORD kDangerArmTimeoutMs = 3000;
 
 enum LoggingLevel
 {
     LoggingLevel_Info = 0,
     LoggingLevel_Debug = 1
+};
+
+enum TargetSource
+{
+    TargetSource_None = 0,
+    TargetSource_Selected = 1,
+    TargetSource_Hovered = 2,
+    TargetSource_Conversation = 3
+};
+
+struct TargetSnapshot
+{
+    bool hasTarget;
+    TargetSource source;
+    Character* target;
+    std::string name;
+    std::string factionName;
+    std::string alignment;
+    std::string membership;
+    std::string stateLabel;
+    bool unconscious;
+    bool playingDead;
+    bool dying;
 };
 
 std::string g_configPath;
@@ -50,9 +81,19 @@ bool g_hotkeyPrevDown = false;
 bool g_confirmDangerousActions = true;
 bool g_panelHidden = false;
 bool g_panelCollapsed = false;
+bool g_runtimePanelPositionSet = false;
+int g_runtimePanelLeft = kPanelLeft;
+int g_runtimePanelTop = kPanelTop;
+bool g_panelDragging = false;
+bool g_panelDragMoved = false;
+int g_panelDragLastMouseX = 0;
+int g_panelDragLastMouseY = 0;
+int g_panelDragMovedDistance = 0;
 bool g_forceDyingArmed = false;
 DWORD g_forceDyingArmedAtMs = 0;
 std::string g_lastStatusMessage = "Ready";
+TargetSnapshot g_lastTargetSnapshot;
+bool g_hasLastTargetSnapshot = false;
 
 PlayerInterface* g_lastPlayerInterface = 0;
 bool g_loggedPanelCreateFailure = false;
@@ -151,6 +192,91 @@ std::string ToUpperAscii(const std::string& value)
     }
 
     return upper;
+}
+
+std::string SanitizeLogValue(const std::string& value)
+{
+    std::string sanitized;
+    sanitized.reserve(value.size());
+
+    for (size_t index = 0; index < value.size(); ++index)
+    {
+        const char current = value[index];
+        if (current == '"')
+        {
+            sanitized.push_back('\'');
+            continue;
+        }
+
+        sanitized.push_back(current);
+    }
+
+    return sanitized;
+}
+
+const char* TargetSourceToUiLabel(TargetSource source)
+{
+    switch (source)
+    {
+    case TargetSource_Selected:
+        return "Selected";
+    case TargetSource_Hovered:
+        return "Hovered";
+    case TargetSource_Conversation:
+        return "Conversation";
+    default:
+        return "None";
+    }
+}
+
+const char* TargetSourceToLogLabel(TargetSource source)
+{
+    switch (source)
+    {
+    case TargetSource_Selected:
+        return "selected";
+    case TargetSource_Hovered:
+        return "hovered";
+    case TargetSource_Conversation:
+        return "conversation";
+    default:
+        return "none";
+    }
+}
+
+void ResetTargetSnapshot(TargetSnapshot* snapshot)
+{
+    if (!snapshot)
+    {
+        return;
+    }
+
+    snapshot->hasTarget = false;
+    snapshot->source = TargetSource_None;
+    snapshot->target = 0;
+    snapshot->name.clear();
+    snapshot->factionName.clear();
+    snapshot->alignment.clear();
+    snapshot->membership.clear();
+    snapshot->stateLabel = "Unknown";
+    snapshot->unconscious = false;
+    snapshot->playingDead = false;
+    snapshot->dying = false;
+}
+
+bool AreTargetSnapshotsEqual(const TargetSnapshot& left, const TargetSnapshot& right)
+{
+    return left.hasTarget == right.hasTarget
+        && left.source == right.source
+        && left.target == right.target
+        && left.name == right.name
+        && left.factionName == right.factionName
+        && left.alignment == right.alignment
+        && left.membership == right.membership
+        && left.stateLabel == right.stateLabel
+        && left.unconscious == right.unconscious
+        && left.playingDead == right.playingDead
+        && left.dying == right.dying;
 }
 
 bool TryResolveModConfigPath(std::string* outPath)
@@ -516,19 +642,150 @@ void ClearForceDyingArm(const char* reason, bool updateStatus)
     }
 }
 
-void ApplyPanelLayout()
+bool TryGetViewportSize(int* widthOut, int* heightOut)
+{
+    if (!widthOut || !heightOut)
+    {
+        return false;
+    }
+
+    MyGUI::RenderManager* renderManager = MyGUI::RenderManager::getInstancePtr();
+    if (!renderManager)
+    {
+        return false;
+    }
+
+    const MyGUI::IntSize view = renderManager->getViewSize();
+    if (view.width <= 0 || view.height <= 0)
+    {
+        return false;
+    }
+
+    *widthOut = view.width;
+    *heightOut = view.height;
+    return true;
+}
+
+bool TryGetMousePosition(int* xOut, int* yOut)
+{
+    if (!xOut || !yOut)
+    {
+        return false;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    if (!inputManager)
+    {
+        return false;
+    }
+
+    const MyGUI::IntPoint mouse = inputManager->getMousePosition();
+    *xOut = mouse.left;
+    *yOut = mouse.top;
+    return true;
+}
+
+int ClampIntValue(int value, int minValue, int maxValue)
+{
+    if (value < minValue)
+    {
+        return minValue;
+    }
+    if (value > maxValue)
+    {
+        return maxValue;
+    }
+    return value;
+}
+
+MyGUI::IntCoord BuildPanelCoordFromAnchor(int left, int top)
+{
+    const int height = g_panelCollapsed ? kPanelCollapsedHeight : kPanelExpandedHeight;
+    return MyGUI::IntCoord(left, top, kPanelWidth, height);
+}
+
+MyGUI::IntCoord ClampPanelCoordToViewport(const MyGUI::IntCoord& inputCoord)
+{
+    int left = inputCoord.left;
+    int top = inputCoord.top;
+    const int width = (inputCoord.width > 0) ? inputCoord.width : kPanelWidth;
+    const int height = (inputCoord.height > 0)
+        ? inputCoord.height
+        : (g_panelCollapsed ? kPanelCollapsedHeight : kPanelExpandedHeight);
+
+    int viewWidth = 0;
+    int viewHeight = 0;
+    if (!TryGetViewportSize(&viewWidth, &viewHeight))
+    {
+        if (left < kPanelViewportPadding)
+        {
+            left = kPanelViewportPadding;
+        }
+        if (top < kPanelViewportPadding)
+        {
+            top = kPanelViewportPadding;
+        }
+        return MyGUI::IntCoord(left, top, width, height);
+    }
+
+    int minLeft = kPanelViewportPadding;
+    int minTop = kPanelViewportPadding;
+    int maxLeft = viewWidth - width - kPanelViewportPadding;
+    int maxTop = viewHeight - height - kPanelViewportPadding;
+
+    if (maxLeft < minLeft)
+    {
+        minLeft = 0;
+        maxLeft = viewWidth - width;
+        if (maxLeft < minLeft)
+        {
+            maxLeft = minLeft;
+        }
+    }
+
+    if (maxTop < minTop)
+    {
+        minTop = 0;
+        maxTop = viewHeight - height;
+        if (maxTop < minTop)
+        {
+            maxTop = minTop;
+        }
+    }
+
+    left = ClampIntValue(left, minLeft, maxLeft);
+    top = ClampIntValue(top, minTop, maxTop);
+    return MyGUI::IntCoord(left, top, width, height);
+}
+
+void StorePanelRuntimePosition(const MyGUI::IntCoord& panelCoord)
+{
+    g_runtimePanelPositionSet = true;
+    g_runtimePanelLeft = panelCoord.left;
+    g_runtimePanelTop = panelCoord.top;
+}
+
+MyGUI::IntCoord ResolvePanelCoord()
+{
+    if (g_runtimePanelPositionSet)
+    {
+        return ClampPanelCoordToViewport(BuildPanelCoordFromAnchor(g_runtimePanelLeft, g_runtimePanelTop));
+    }
+
+    return ClampPanelCoordToViewport(BuildPanelCoordFromAnchor(kPanelLeft, kPanelTop));
+}
+
+void ApplyPanelLayout(const MyGUI::IntCoord& panelCoord)
 {
     if (!g_panel)
     {
         return;
     }
 
-    MyGUI::IntCoord panelCoord = g_panel->getCoord();
-    panelCoord.left = kPanelLeft;
-    panelCoord.top = kPanelTop;
-    panelCoord.width = kPanelWidth;
-    panelCoord.height = g_panelCollapsed ? kPanelCollapsedHeight : kPanelExpandedHeight;
-    g_panel->setCoord(panelCoord);
+    const MyGUI::IntCoord clampedCoord = ClampPanelCoordToViewport(panelCoord);
+    StorePanelRuntimePosition(clampedCoord);
+
+    g_panel->setCoord(clampedCoord);
     g_panel->setVisible(!g_panelHidden);
 
     const bool bodyVisible = !g_panelHidden && !g_panelCollapsed;
@@ -608,6 +865,160 @@ void ApplyPanelLayout()
     }
 }
 
+void ApplyPanelLayout()
+{
+    if (!g_panel)
+    {
+        return;
+    }
+
+    ApplyPanelLayout(ResolvePanelCoord());
+}
+
+void MovePanelByDelta(int deltaX, int deltaY)
+{
+    if (!g_panel || (deltaX == 0 && deltaY == 0))
+    {
+        return;
+    }
+
+    const int moveX = (deltaX < 0) ? -deltaX : deltaX;
+    const int moveY = (deltaY < 0) ? -deltaY : deltaY;
+    g_panelDragMovedDistance += moveX + moveY;
+    if (g_panelDragMovedDistance >= kPanelDragThreshold)
+    {
+        g_panelDragMoved = true;
+    }
+
+    const MyGUI::IntCoord currentCoord = g_panel->getCoord();
+    const MyGUI::IntCoord movedCoord = ClampPanelCoordToViewport(
+        BuildPanelCoordFromAnchor(currentCoord.left + deltaX, currentCoord.top + deltaY));
+    ApplyPanelLayout(movedCoord);
+}
+
+void FinalizePanelDrag(const char* source)
+{
+    if (!g_panelDragging)
+    {
+        return;
+    }
+
+    g_panelDragging = false;
+    if (!g_panel)
+    {
+        g_panelDragMoved = false;
+        g_panelDragMovedDistance = 0;
+        return;
+    }
+
+    const MyGUI::IntCoord clampedCoord = ClampPanelCoordToViewport(g_panel->getCoord());
+    ApplyPanelLayout(clampedCoord);
+
+    if (g_panelDragMoved)
+    {
+        std::stringstream line;
+        line << "event=testkit_panel_moved left=" << clampedCoord.left
+             << " top=" << clampedCoord.top;
+        if (source)
+        {
+            line << " source=\"" << source << "\"";
+        }
+        LogInfoLine(line.str());
+    }
+
+    g_panelDragMoved = false;
+    g_panelDragMovedDistance = 0;
+}
+
+void OnHeaderMousePressed(MyGUI::Widget*, int left, int top, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    g_panelDragging = true;
+    g_panelDragMoved = false;
+    if (!TryGetMousePosition(&g_panelDragLastMouseX, &g_panelDragLastMouseY))
+    {
+        g_panelDragLastMouseX = left;
+        g_panelDragLastMouseY = top;
+    }
+    g_panelDragMovedDistance = 0;
+}
+
+void OnHeaderMouseDrag(MyGUI::Widget*, int left, int top, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    if (!g_panelDragging || !g_panel)
+    {
+        return;
+    }
+
+    int mouseX = left;
+    int mouseY = top;
+    TryGetMousePosition(&mouseX, &mouseY);
+
+    const int deltaX = mouseX - g_panelDragLastMouseX;
+    const int deltaY = mouseY - g_panelDragLastMouseY;
+    if (deltaX == 0 && deltaY == 0)
+    {
+        return;
+    }
+
+    MovePanelByDelta(deltaX, deltaY);
+    g_panelDragLastMouseX = mouseX;
+    g_panelDragLastMouseY = mouseY;
+}
+
+void OnHeaderMouseMove(MyGUI::Widget*, int left, int top)
+{
+    if (!g_panelDragging)
+    {
+        return;
+    }
+
+    OnHeaderMouseDrag(0, left, top, MyGUI::MouseButton::Left);
+}
+
+void OnHeaderMouseReleased(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    FinalizePanelDrag("drag_release");
+}
+
+void TickPanelDrag()
+{
+    if (!g_panelDragging || !g_panel)
+    {
+        return;
+    }
+
+    int mouseX = 0;
+    int mouseY = 0;
+    if (TryGetMousePosition(&mouseX, &mouseY))
+    {
+        const int deltaX = mouseX - g_panelDragLastMouseX;
+        const int deltaY = mouseY - g_panelDragLastMouseY;
+        MovePanelByDelta(deltaX, deltaY);
+        g_panelDragLastMouseX = mouseX;
+        g_panelDragLastMouseY = mouseY;
+    }
+
+    if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0)
+    {
+        FinalizePanelDrag("drag_release_poll");
+    }
+}
+
 void ResetPanelWidgetPointers()
 {
     g_panel = 0;
@@ -632,6 +1043,11 @@ void ResetPanelWidgetPointers()
 
 void DestroyPanel()
 {
+    if (g_panel)
+    {
+        StorePanelRuntimePosition(ClampPanelCoordToViewport(g_panel->getCoord()));
+    }
+
     MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
     if (gui && g_panel)
     {
@@ -639,6 +1055,11 @@ void DestroyPanel()
     }
 
     ResetPanelWidgetPointers();
+    g_panelDragging = false;
+    g_panelDragMoved = false;
+    g_panelDragLastMouseX = 0;
+    g_panelDragLastMouseY = 0;
+    g_panelDragMovedDistance = 0;
     g_forceDyingArmed = false;
     g_forceDyingArmedAtMs = 0;
 }
@@ -886,19 +1307,561 @@ void TickPanelToggleHotkey()
     g_hotkeyPrevDown = hotkeyDown;
 }
 
+bool TryGetSelectedTarget(PlayerInterface* player, Character** outTarget)
+{
+    if (!player || !outTarget)
+    {
+        return false;
+    }
+
+    Character* target = 0;
+    __try
+    {
+        if (player->selectedObject && player->selectedObject.isValid())
+        {
+            target = player->selectedObject.getCharacter();
+        }
+
+        if (!target)
+        {
+            target = player->selectedCharacter.getCharacter();
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    if (!target)
+    {
+        return false;
+    }
+
+    *outTarget = target;
+    return true;
+}
+
+bool TryGetSelectedPlayerCharacter(PlayerInterface* player, Character** outTarget)
+{
+    if (!player || !outTarget)
+    {
+        return false;
+    }
+
+    Character* target = 0;
+    __try
+    {
+        target = player->selectedCharacter.getCharacter();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    if (!target)
+    {
+        return false;
+    }
+
+    *outTarget = target;
+    return true;
+}
+
+bool TryGetHoveredTarget(PlayerInterface* player, Character** outTarget)
+{
+    if (!player || !outTarget)
+    {
+        return false;
+    }
+
+    bool hasMouseRightTarget = false;
+    RootObject* root = 0;
+    __try
+    {
+        hasMouseRightTarget = player->mouseRightTargetSet;
+        root = player->mouseRightTarget;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    if (!hasMouseRightTarget || !root)
+    {
+        return false;
+    }
+
+    Character* target = 0;
+    __try
+    {
+        target = root->getHandle().getCharacter();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    if (!target)
+    {
+        return false;
+    }
+
+    *outTarget = target;
+    return true;
+}
+
+bool TryGetConversationTargetFromSpeaker(Character* speaker, Character** outTarget)
+{
+    if (!speaker || !outTarget)
+    {
+        return false;
+    }
+
+    Dialogue* dialogue = 0;
+    bool hasEnded = true;
+    Character* target = 0;
+    __try
+    {
+        dialogue = speaker->dialogue;
+        if (!dialogue)
+        {
+            return false;
+        }
+
+        hasEnded = dialogue->conversationHasEndedPrettyMuch();
+        if (hasEnded)
+        {
+            return false;
+        }
+
+        target = dialogue->getConversationTarget().getCharacter();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    if (!target)
+    {
+        return false;
+    }
+
+    *outTarget = target;
+    return true;
+}
+
+bool TryGetConversationTarget(PlayerInterface* player, Character** outTarget)
+{
+    if (!player || !outTarget)
+    {
+        return false;
+    }
+
+    Character* selected = 0;
+    if (TryGetSelectedPlayerCharacter(player, &selected) && TryGetConversationTargetFromSpeaker(selected, outTarget))
+    {
+        return true;
+    }
+
+    __try
+    {
+        const lektor<Character*>& playerCharacters = player->getAllPlayerCharacters();
+        if (!playerCharacters.valid())
+        {
+            return false;
+        }
+
+        for (lektor<Character*>::const_iterator it = playerCharacters.begin(); it != playerCharacters.end(); ++it)
+        {
+            Character* speaker = *it;
+            if (!speaker || speaker == selected)
+            {
+                continue;
+            }
+
+            if (TryGetConversationTargetFromSpeaker(speaker, outTarget))
+            {
+                return true;
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return false;
+}
+
+bool ResolveInspectionTarget(PlayerInterface* player, Character** outTarget, TargetSource* outSource)
+{
+    if (!outTarget || !outSource)
+    {
+        return false;
+    }
+
+    *outTarget = 0;
+    *outSource = TargetSource_None;
+
+    Character* target = 0;
+    if (TryGetSelectedTarget(player, &target))
+    {
+        *outTarget = target;
+        *outSource = TargetSource_Selected;
+        return true;
+    }
+
+    if (TryGetHoveredTarget(player, &target))
+    {
+        *outTarget = target;
+        *outSource = TargetSource_Hovered;
+        return true;
+    }
+
+    if (TryGetConversationTarget(player, &target))
+    {
+        *outTarget = target;
+        *outSource = TargetSource_Conversation;
+        return true;
+    }
+
+    return false;
+}
+
+std::string SafeCharacterName(Character* target)
+{
+    if (!target)
+    {
+        return "Unknown";
+    }
+
+    const std::string name = target->getName();
+    if (name.empty())
+    {
+        return "Unknown";
+    }
+
+    return name;
+}
+
+std::string SafeFactionName(Character* target)
+{
+    if (!target || !target->owner)
+    {
+        return "Unknown";
+    }
+
+    const std::string name = target->owner->getName();
+    if (name.empty())
+    {
+        return "Unknown";
+    }
+
+    return name;
+}
+
+bool TryResolveMembershipLabel(Character* target, std::string* outLabel)
+{
+    if (!target || !outLabel)
+    {
+        return false;
+    }
+
+    __try
+    {
+        *outLabel = target->isWithThePlayer() ? "Squad" : "Non-squad";
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool TryResolveAlignmentLabel(PlayerInterface* player, Character* target, std::string* outLabel)
+{
+    if (!player || !target || !outLabel)
+    {
+        return false;
+    }
+
+    __try
+    {
+        if (target->isWithThePlayer())
+        {
+            *outLabel = "Ally";
+            return true;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    __try
+    {
+        if (player->isEnemy(target))
+        {
+            *outLabel = "Enemy";
+            return true;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    bool sawPlayerCharacter = false;
+    bool sawAlly = false;
+    __try
+    {
+        const lektor<Character*>& playerCharacters = player->getAllPlayerCharacters();
+        if (playerCharacters.valid())
+        {
+            for (lektor<Character*>::const_iterator it = playerCharacters.begin(); it != playerCharacters.end(); ++it)
+            {
+                Character* playerCharacter = *it;
+                if (!playerCharacter || playerCharacter == target)
+                {
+                    continue;
+                }
+
+                sawPlayerCharacter = true;
+                if (target->isAlly(playerCharacter, true))
+                {
+                    sawAlly = true;
+                    break;
+                }
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    if (sawAlly)
+    {
+        *outLabel = "Ally";
+        return true;
+    }
+
+    *outLabel = sawPlayerCharacter ? "Neutral" : "Unknown";
+    return true;
+}
+
+bool TryResolveStateSummary(Character* target, std::string* outLabel, bool* unconsciousOut, bool* playingDeadOut, bool* dyingOut)
+{
+    if (!target || !outLabel || !unconsciousOut || !playingDeadOut || !dyingOut)
+    {
+        return false;
+    }
+
+    bool unconscious = false;
+    bool playingDead = false;
+    bool dying = false;
+    __try
+    {
+        const ProneState proneState = target->getProneState();
+        unconscious = target->isUnconcious() || proneState == PS_KO;
+        playingDead = (proneState == PS_PLAYING_DEAD);
+        dying = target->isDead();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    *unconsciousOut = unconscious;
+    *playingDeadOut = playingDead;
+    *dyingOut = dying;
+
+    if (dying)
+    {
+        *outLabel = "Dying";
+    }
+    else if (playingDead)
+    {
+        *outLabel = "Playing Dead";
+    }
+    else if (unconscious)
+    {
+        *outLabel = "Unconscious";
+    }
+    else
+    {
+        *outLabel = "None detected";
+    }
+
+    return true;
+}
+
+void SetActionButtonsEnabled(bool enabled)
+{
+    if (g_forceUnconsciousButton)
+    {
+        g_forceUnconsciousButton->setEnabled(enabled);
+    }
+    if (g_forcePlayingDeadButton)
+    {
+        g_forcePlayingDeadButton->setEnabled(enabled);
+    }
+    if (g_forceDyingButton)
+    {
+        g_forceDyingButton->setEnabled(enabled);
+    }
+}
+
+void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)
+{
+    if (!g_targetNameText || !g_targetFactionText || !g_targetAlignmentText
+        || !g_targetMembershipText || !g_targetStateText || !g_noTargetText)
+    {
+        return;
+    }
+
+    if (!snapshot.hasTarget)
+    {
+        g_targetNameText->setCaption("Name: No target");
+        g_targetFactionText->setCaption("Faction: Unknown");
+        g_targetAlignmentText->setCaption("Alignment: Unknown");
+        g_targetMembershipText->setCaption("Membership: Unknown");
+        g_targetStateText->setCaption("State: Unknown");
+        g_noTargetText->setCaption("No target - select a character");
+        SetActionButtonsEnabled(false);
+        return;
+    }
+
+    g_targetNameText->setCaption("Name: " + snapshot.name);
+    g_targetFactionText->setCaption("Faction: " + snapshot.factionName);
+    g_targetAlignmentText->setCaption("Alignment: " + snapshot.alignment);
+    g_targetMembershipText->setCaption("Membership: " + snapshot.membership);
+    g_targetStateText->setCaption("State: " + snapshot.stateLabel);
+    g_noTargetText->setCaption(std::string("Source: ") + TargetSourceToUiLabel(snapshot.source));
+    SetActionButtonsEnabled(true);
+}
+
+void LogTargetSnapshotIfChanged(const TargetSnapshot& snapshot)
+{
+    if (g_hasLastTargetSnapshot && AreTargetSnapshotsEqual(g_lastTargetSnapshot, snapshot))
+    {
+        return;
+    }
+
+    std::stringstream line;
+    line << "event=testkit_target_snapshot target_present=" << (snapshot.hasTarget ? "true" : "false");
+    if (snapshot.hasTarget)
+    {
+        line << " source=\"" << TargetSourceToLogLabel(snapshot.source) << "\""
+             << " name=\"" << SanitizeLogValue(snapshot.name) << "\""
+             << " faction=\"" << SanitizeLogValue(snapshot.factionName) << "\""
+             << " alignment=\"" << snapshot.alignment << "\""
+             << " membership=\"" << snapshot.membership << "\""
+             << " state=\"" << snapshot.stateLabel << "\""
+             << " unconscious=" << (snapshot.unconscious ? "true" : "false")
+             << " playing_dead=" << (snapshot.playingDead ? "true" : "false")
+             << " dying=" << (snapshot.dying ? "true" : "false");
+    }
+    LogDebugLine(line.str());
+}
+
+void BuildTargetSnapshot(PlayerInterface* player, Character* target, TargetSource source, TargetSnapshot* snapshotOut)
+{
+    if (!snapshotOut)
+    {
+        return;
+    }
+
+    ResetTargetSnapshot(snapshotOut);
+    if (!target)
+    {
+        return;
+    }
+
+    snapshotOut->hasTarget = true;
+    snapshotOut->source = source;
+    snapshotOut->target = target;
+
+    snapshotOut->name = SafeCharacterName(target);
+    snapshotOut->factionName = SafeFactionName(target);
+
+    if (!TryResolveAlignmentLabel(player, target, &snapshotOut->alignment))
+    {
+        snapshotOut->alignment = "Unknown";
+    }
+    if (!TryResolveMembershipLabel(target, &snapshotOut->membership))
+    {
+        snapshotOut->membership = "Unknown";
+    }
+    if (!TryResolveStateSummary(
+            target,
+            &snapshotOut->stateLabel,
+            &snapshotOut->unconscious,
+            &snapshotOut->playingDead,
+            &snapshotOut->dying))
+    {
+        snapshotOut->stateLabel = "Unknown";
+        snapshotOut->unconscious = false;
+        snapshotOut->playingDead = false;
+        snapshotOut->dying = false;
+    }
+}
+
+void UpdateTargetInspection(PlayerInterface* player)
+{
+    TargetSnapshot snapshot;
+    ResetTargetSnapshot(&snapshot);
+
+    Character* target = 0;
+    TargetSource source = TargetSource_None;
+    if (ResolveInspectionTarget(player, &target, &source))
+    {
+        BuildTargetSnapshot(player, target, source, &snapshot);
+    }
+
+    if (g_forceDyingArmed
+        && (!snapshot.hasTarget
+            || (g_hasLastTargetSnapshot
+                && (snapshot.target != g_lastTargetSnapshot.target || snapshot.source != g_lastTargetSnapshot.source))))
+    {
+        ClearForceDyingArm(snapshot.hasTarget ? "target_changed" : "target_lost", true);
+    }
+
+    ApplyTargetSnapshotToUi(snapshot);
+    LogTargetSnapshotIfChanged(snapshot);
+    g_lastTargetSnapshot = snapshot;
+    g_hasLastTargetSnapshot = true;
+}
+
 void ReportShellOnlyAction(const char* actionId, const char* actionLabel)
 {
     std::stringstream requested;
     requested << "event=testkit_action_requested action=\"" << actionId << "\"";
+    if (g_hasLastTargetSnapshot && g_lastTargetSnapshot.hasTarget)
+    {
+        requested << " source=\"" << TargetSourceToLogLabel(g_lastTargetSnapshot.source) << "\""
+                  << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+    }
     LogInfoLine(requested.str());
+
+    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId
+               << "\" success=false reason=\"no_target\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("No target - select a character");
+        return;
+    }
 
     std::stringstream result;
     result << "event=testkit_action_result action=\"" << actionId
-           << "\" success=false reason=\"step1_shell_only\"";
+           << "\" success=false reason=\"slice2_shell_only\""
+           << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
     LogInfoLine(result.str());
 
     std::stringstream status;
-    status << actionLabel << " unavailable in step 1 shell";
+    status << actionLabel << " unavailable in slice 2 shell";
     SetStatusMessage(status.str());
 }
 
@@ -990,12 +1953,17 @@ void InitializePanelWidgets()
     }
 
     g_headerFrame->setCaption("");
-    g_headerFrame->setEnabled(false);
+    g_headerFrame->setEnabled(true);
+    g_headerFrame->setNeedMouseFocus(true);
+    g_headerFrame->setNeedKeyFocus(true);
+    g_panel->setNeedMouseFocus(true);
     g_headerTitleText->setCaption("Emkejs Test Kit");
+    g_headerTitleText->setNeedMouseFocus(false);
     ConfigureTextWidget(g_headerTitleText);
 
     g_bodyFrame->setCaption("");
     g_bodyFrame->setEnabled(false);
+    g_bodyFrame->setNeedMouseFocus(true);
 
     ConfigureTextWidget(g_targetSectionText);
     ConfigureTextWidget(g_targetNameText);
@@ -1023,11 +1991,20 @@ void InitializePanelWidgets()
     UpdateForceDyingButtonCaption();
     UpdateCollapseButtonCaption();
     RefreshStatusWidget();
+    SetActionButtonsEnabled(false);
 
     g_collapseButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCollapseButtonClicked);
     g_forceUnconsciousButton->eventMouseButtonClick += MyGUI::newDelegate(&OnForceUnconsciousButtonClicked);
     g_forcePlayingDeadButton->eventMouseButtonClick += MyGUI::newDelegate(&OnForcePlayingDeadButtonClicked);
     g_forceDyingButton->eventMouseButtonClick += MyGUI::newDelegate(&OnForceDyingButtonClicked);
+    g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
+    g_headerFrame->eventMouseDrag += MyGUI::newDelegate(&OnHeaderMouseDrag);
+    g_headerFrame->eventMouseMove += MyGUI::newDelegate(&OnHeaderMouseMove);
+    g_headerFrame->eventMouseButtonReleased += MyGUI::newDelegate(&OnHeaderMouseReleased);
+
+    TargetSnapshot snapshot;
+    ResetTargetSnapshot(&snapshot);
+    ApplyTargetSnapshotToUi(snapshot);
 }
 
 void CreatePanelWidgets()
@@ -1038,16 +2015,18 @@ void CreatePanelWidgets()
         return;
     }
 
+    const MyGUI::IntCoord panelCoord = ResolvePanelCoord();
+
     g_panel = gui->createWidget<MyGUI::Widget>(
         "PanelEmpty",
-        MyGUI::IntCoord(kPanelLeft, kPanelTop, kPanelWidth, kPanelExpandedHeight),
+        panelCoord,
         MyGUI::Align::Default,
         "Main");
     if (!g_panel)
     {
         g_panel = gui->createWidget<MyGUI::Widget>(
             "PanelEmpty",
-            MyGUI::IntCoord(kPanelLeft, kPanelTop, kPanelWidth, kPanelExpandedHeight),
+            panelCoord,
             MyGUI::Align::Default,
             "Overlapped");
     }
@@ -1066,7 +2045,7 @@ void CreatePanelWidgets()
         "Kenshi_Button1",
         MyGUI::IntCoord(0, 0, kPanelWidth, 38),
         MyGUI::Align::Default);
-    g_headerTitleText = g_panel->createWidget<MyGUI::TextBox>(
+    g_headerTitleText = g_headerFrame->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
         MyGUI::IntCoord(12, 8, kPanelWidth - 116, 22),
         MyGUI::Align::Default);
@@ -1145,7 +2124,7 @@ void CreatePanelWidgets()
     InitializePanelWidgets();
     ApplyPanelLayout();
     g_loggedPanelCreateFailure = false;
-    LogInfoLine("event=testkit_panel_created visible=true");
+    LogInfoLine(std::string("event=testkit_panel_created visible=") + (!g_panelHidden ? "true" : "false"));
 }
 
 void EnsurePanel(PlayerInterface* thisptr)
@@ -1157,10 +2136,16 @@ void EnsurePanel(PlayerInterface* thisptr)
         CreatePanelWidgets();
     }
 
+    TickPanelDrag();
     TickForceDyingArmTimeout();
     UpdateCollapseButtonCaption();
     UpdateForceDyingButtonCaption();
     ApplyPanelLayout();
+
+    if (!g_panelHidden && !g_panelCollapsed)
+    {
+        UpdateTargetInspection(thisptr);
+    }
 }
 
 void OnSaveLoadTransitionStart(const char* source)
@@ -1176,6 +2161,8 @@ void OnSaveLoadTransitionStart(const char* source)
     g_lastPlayerInterface = 0;
     g_hotkeyPrevDown = false;
     g_lastStatusMessage = "Ready";
+    ResetTargetSnapshot(&g_lastTargetSnapshot);
+    g_hasLastTargetSnapshot = false;
 }
 
 void PlayerInterface_updateUT_hook(PlayerInterface* thisptr)
