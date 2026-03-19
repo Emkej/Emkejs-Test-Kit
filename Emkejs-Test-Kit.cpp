@@ -2,9 +2,11 @@
 
 #include <core/Functions.h>
 #include <kenshi/Character.h>
+#include <kenshi/Damages.h>
 #include <kenshi/Dialogue.h>
 #include <kenshi/Faction.h>
 #include <kenshi/Kenshi.h>
+#include <kenshi/MedicalSystem.h>
 #include <kenshi/PlayerInterface.h>
 #include <kenshi/RootObject.h>
 #include <kenshi/SaveManager.h>
@@ -32,7 +34,7 @@ const char* kDefaultTogglePanelKey = "D";
 const int kPanelLeft = 18;
 const int kPanelTop = 140;
 const int kPanelWidth = 360;
-const int kPanelExpandedHeight = 388;
+const int kPanelExpandedHeight = 486;
 const int kPanelCollapsedHeight = 42;
 const int kPanelViewportPadding = 16;
 const int kPanelDragThreshold = 3;
@@ -41,6 +43,9 @@ const float kForceUnconsciousDurationSeconds = 30.0f;
 const float kForceDyingBloodOffset = 8.0f;
 const float kForceDyingAliveBloodMargin = 1.0f;
 const float kProbablyDyingBloodMax = 50.0f;
+const float kLimbDamageFraction = 0.35f;
+const float kMinimumLimbDamageAmount = 5.0f;
+const float kFloatChangeEpsilon = 0.001f;
 
 enum LoggingLevel
 {
@@ -118,6 +123,11 @@ MyGUI::TextBox* g_noTargetText = 0;
 MyGUI::TextBox* g_statesSectionText = 0;
 MyGUI::Button* g_forceUnconsciousButton = 0;
 MyGUI::Button* g_forcePlayingDeadButton = 0;
+MyGUI::TextBox* g_limbDamageSectionText = 0;
+MyGUI::Button* g_damageLeftArmButton = 0;
+MyGUI::Button* g_damageRightArmButton = 0;
+MyGUI::Button* g_damageLeftLegButton = 0;
+MyGUI::Button* g_damageRightLegButton = 0;
 MyGUI::TextBox* g_dangerousSectionText = 0;
 MyGUI::Button* g_forceDyingButton = 0;
 MyGUI::TextBox* g_statusText = 0;
@@ -1043,6 +1053,11 @@ void ResetPanelWidgetPointers()
     g_statesSectionText = 0;
     g_forceUnconsciousButton = 0;
     g_forcePlayingDeadButton = 0;
+    g_limbDamageSectionText = 0;
+    g_damageLeftArmButton = 0;
+    g_damageRightArmButton = 0;
+    g_damageLeftLegButton = 0;
+    g_damageRightLegButton = 0;
     g_dangerousSectionText = 0;
     g_forceDyingButton = 0;
     g_statusText = 0;
@@ -1763,6 +1778,22 @@ void SetActionButtonsEnabled(bool enabled)
     {
         g_forcePlayingDeadButton->setEnabled(enabled);
     }
+    if (g_damageLeftArmButton)
+    {
+        g_damageLeftArmButton->setEnabled(enabled);
+    }
+    if (g_damageRightArmButton)
+    {
+        g_damageRightArmButton->setEnabled(enabled);
+    }
+    if (g_damageLeftLegButton)
+    {
+        g_damageLeftLegButton->setEnabled(enabled);
+    }
+    if (g_damageRightLegButton)
+    {
+        g_damageRightLegButton->setEnabled(enabled);
+    }
     if (g_forceDyingButton)
     {
         g_forceDyingButton->setEnabled(enabled);
@@ -2177,6 +2208,136 @@ bool TryForceDying(
     return true;
 }
 
+bool TryApplyLimbDamage(
+    Character* target,
+    MedicalSystem::HealthPartStatus::PartType partType,
+    LeftRight side,
+    float* partMaxHealthOut,
+    float* beforeFleshOut,
+    float* afterFleshOut,
+    float* beforeFleshStunOut,
+    float* afterFleshStunOut,
+    float* beforeDerivedHealthOut,
+    float* afterDerivedHealthOut,
+    float* appliedDamageOut)
+{
+    if (partMaxHealthOut)
+    {
+        *partMaxHealthOut = 0.0f;
+    }
+    if (beforeFleshOut)
+    {
+        *beforeFleshOut = 0.0f;
+    }
+    if (afterFleshOut)
+    {
+        *afterFleshOut = 0.0f;
+    }
+    if (appliedDamageOut)
+    {
+        *appliedDamageOut = 0.0f;
+    }
+    if (beforeFleshStunOut)
+    {
+        *beforeFleshStunOut = 0.0f;
+    }
+    if (afterFleshStunOut)
+    {
+        *afterFleshStunOut = 0.0f;
+    }
+    if (beforeDerivedHealthOut)
+    {
+        *beforeDerivedHealthOut = 0.0f;
+    }
+    if (afterDerivedHealthOut)
+    {
+        *afterDerivedHealthOut = 0.0f;
+    }
+
+    if (!target)
+    {
+        return false;
+    }
+
+    __try
+    {
+        MedicalSystem* medical = target->getMedical();
+        if (!medical)
+        {
+            return false;
+        }
+
+        MedicalSystem::HealthPartStatus* part = medical->getPart(partType, side);
+        if (!part)
+        {
+            return false;
+        }
+
+        const float partMaxHealth = part->maxHealth();
+        const float beforeFlesh = part->flesh;
+        const float beforeFleshStun = part->fleshStun;
+        const float beforeDerivedHealth = part->derivedFleshHealthPercent;
+        float damageAmount = partMaxHealth * kLimbDamageFraction;
+        if (damageAmount < kMinimumLimbDamageAmount)
+        {
+            damageAmount = kMinimumLimbDamageAmount;
+        }
+
+        __declspec(align(16)) unsigned char damageStorage[sizeof(Damages)] = {};
+        Damages* damage = reinterpret_cast<Damages*>(damageStorage);
+        damage->cut = 0.0f;
+        damage->blunt = damageAmount;
+        damage->pierce = 0.0f;
+        damage->extraStun = 0.0f;
+        damage->bleedMult = 0.0f;
+        damage->armourPenetration = 0.0f;
+
+        part->applyDamage(*damage);
+        part->updateDerivedHealths();
+        medical->updateDamageState();
+        medical->reassessCollapseMode(false, false);
+
+        if (partMaxHealthOut)
+        {
+            *partMaxHealthOut = partMaxHealth;
+        }
+        if (beforeFleshOut)
+        {
+            *beforeFleshOut = beforeFlesh;
+        }
+        if (afterFleshOut)
+        {
+            *afterFleshOut = part->flesh;
+        }
+        if (beforeFleshStunOut)
+        {
+            *beforeFleshStunOut = beforeFleshStun;
+        }
+        if (afterFleshStunOut)
+        {
+            *afterFleshStunOut = part->fleshStun;
+        }
+        if (beforeDerivedHealthOut)
+        {
+            *beforeDerivedHealthOut = beforeDerivedHealth;
+        }
+        if (afterDerivedHealthOut)
+        {
+            *afterDerivedHealthOut = part->derivedFleshHealthPercent;
+        }
+        if (appliedDamageOut)
+        {
+            *appliedDamageOut = damageAmount;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
 void ReportShellOnlyAction(const char* actionId, const char* actionLabel)
 {
     LogActionRequested(actionId);
@@ -2465,6 +2626,216 @@ void OnForcePlayingDeadButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButto
     }
 }
 
+void OnDamageLimbButtonClicked(
+    const char* actionId,
+    const char* actionLabel,
+    MedicalSystem::HealthPartStatus::PartType partType,
+    LeftRight side)
+{
+    LogActionRequested(actionId);
+
+    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_target\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("No target - select a character");
+        return;
+    }
+
+    if (g_lastTargetSnapshot.dead)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"target_dead\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(std::string(actionLabel) + " failed - target is dead");
+        return;
+    }
+
+    const Character* const expectedTarget = g_lastTargetSnapshot.target;
+    const std::string targetName = g_lastTargetSnapshot.name;
+
+    float partMaxHealth = 0.0f;
+    float beforeFlesh = 0.0f;
+    float afterFlesh = 0.0f;
+    float beforeFleshStun = 0.0f;
+    float afterFleshStun = 0.0f;
+    float beforeDerivedHealth = 0.0f;
+    float afterDerivedHealth = 0.0f;
+    float appliedDamage = 0.0f;
+    if (!TryApplyLimbDamage(
+            g_lastTargetSnapshot.target,
+            partType,
+            side,
+            &partMaxHealth,
+            &beforeFlesh,
+            &afterFlesh,
+            &beforeFleshStun,
+            &afterFleshStun,
+            &beforeDerivedHealth,
+            &afterDerivedHealth,
+            &appliedDamage))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"apply_failed\""
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(std::string(actionLabel) + " failed - apply path unavailable");
+        return;
+    }
+
+    std::string observedStateLabel = "Unknown";
+    bool observedUnconscious = false;
+    bool observedPlayingDead = false;
+    bool observedDying = false;
+    bool observedDead = false;
+    if (g_lastPlayerInterface)
+    {
+        UpdateTargetInspection(g_lastPlayerInterface);
+        if (g_hasLastTargetSnapshot
+            && g_lastTargetSnapshot.hasTarget
+            && g_lastTargetSnapshot.target == expectedTarget)
+        {
+            observedStateLabel = g_lastTargetSnapshot.stateLabel;
+            observedUnconscious = g_lastTargetSnapshot.unconscious;
+            observedPlayingDead = g_lastTargetSnapshot.playingDead;
+            observedDying = g_lastTargetSnapshot.dying;
+            observedDead = g_lastTargetSnapshot.dead;
+        }
+    }
+    else
+    {
+        TryResolveStateSummary(
+            g_lastTargetSnapshot.target,
+            &observedStateLabel,
+            &observedUnconscious,
+            &observedPlayingDead,
+            &observedDying,
+            &observedDead);
+    }
+
+    const bool fleshChanged = (beforeFlesh - afterFlesh > kFloatChangeEpsilon) || (afterFlesh - beforeFlesh > kFloatChangeEpsilon);
+    const bool fleshStunChanged =
+        (beforeFleshStun - afterFleshStun > kFloatChangeEpsilon) || (afterFleshStun - beforeFleshStun > kFloatChangeEpsilon);
+    const bool derivedHealthChanged =
+        (beforeDerivedHealth - afterDerivedHealth > kFloatChangeEpsilon)
+        || (afterDerivedHealth - beforeDerivedHealth > kFloatChangeEpsilon);
+    const bool observedEffect =
+        fleshChanged || fleshStunChanged || derivedHealthChanged || observedUnconscious || observedDying || observedDead;
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"" << actionId << "\" success="
+           << (observedEffect ? "true" : "false")
+           << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+           << " part_max_health=" << partMaxHealth
+           << " before_flesh=" << beforeFlesh
+           << " after_flesh=" << afterFlesh
+           << " before_flesh_stun=" << beforeFleshStun
+           << " after_flesh_stun=" << afterFleshStun
+           << " before_derived_health=" << beforeDerivedHealth
+           << " after_derived_health=" << afterDerivedHealth
+           << " applied_damage=" << appliedDamage
+           << " observed_state=\"" << observedStateLabel << "\""
+           << " observed_unconscious=" << (observedUnconscious ? "true" : "false")
+           << " observed_playing_dead=" << (observedPlayingDead ? "true" : "false")
+           << " observed_dying=" << (observedDying ? "true" : "false")
+           << " observed_dead=" << (observedDead ? "true" : "false");
+    if (!observedEffect)
+    {
+        result << " reason=\"not_observed_after_apply\"";
+    }
+    LogInfoLine(result.str());
+
+    if (observedEffect)
+    {
+        SetStatusMessage(std::string(actionLabel) + " applied to " + targetName);
+        return;
+    }
+
+    SetStatusMessage(std::string(actionLabel) + " requested for " + targetName + " - no limb change readback yet");
+}
+
+void OnDamageLeftArmButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnDamageLimbButtonClicked(
+        "damage_left_arm",
+        "Damage Left Arm",
+        MedicalSystem::HealthPartStatus::PART_ARM,
+        SIDE_LEFT);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnDamageRightArmButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnDamageLimbButtonClicked(
+        "damage_right_arm",
+        "Damage Right Arm",
+        MedicalSystem::HealthPartStatus::PART_ARM,
+        SIDE_RIGHT);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnDamageLeftLegButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnDamageLimbButtonClicked(
+        "damage_left_leg",
+        "Damage Left Leg",
+        MedicalSystem::HealthPartStatus::PART_LEG,
+        SIDE_LEFT);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnDamageRightLegButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnDamageLimbButtonClicked(
+        "damage_right_leg",
+        "Damage Right Leg",
+        MedicalSystem::HealthPartStatus::PART_LEG,
+        SIDE_RIGHT);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnForceDyingButtonClicked(MyGUI::Widget*)
 {
     if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
@@ -2646,6 +3017,11 @@ bool HasAllPanelWidgets()
         && g_statesSectionText
         && g_forceUnconsciousButton
         && g_forcePlayingDeadButton
+        && g_limbDamageSectionText
+        && g_damageLeftArmButton
+        && g_damageRightArmButton
+        && g_damageLeftLegButton
+        && g_damageRightLegButton
         && g_dangerousSectionText
         && g_forceDyingButton
         && g_statusText;
@@ -2679,6 +3055,7 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_targetStateText);
     ConfigureTextWidget(g_noTargetText);
     ConfigureTextWidget(g_statesSectionText);
+    ConfigureTextWidget(g_limbDamageSectionText);
     ConfigureTextWidget(g_dangerousSectionText);
     ConfigureTextWidget(g_statusText);
 
@@ -2690,10 +3067,15 @@ void InitializePanelWidgets()
     g_targetStateText->setCaption("State: Unknown");
     g_noTargetText->setCaption("No target - select a character");
     g_statesSectionText->setCaption("States");
+    g_limbDamageSectionText->setCaption("Limb Damage");
     g_dangerousSectionText->setCaption("Dangerous");
 
     g_forceUnconsciousButton->setCaption("Force Unconscious");
     g_forcePlayingDeadButton->setCaption("Force Playing Dead");
+    g_damageLeftArmButton->setCaption("Damage Left Arm");
+    g_damageRightArmButton->setCaption("Damage Right Arm");
+    g_damageLeftLegButton->setCaption("Damage Left Leg");
+    g_damageRightLegButton->setCaption("Damage Right Leg");
     UpdateForceDyingButtonCaption();
     UpdateCollapseButtonCaption();
     RefreshStatusWidget();
@@ -2702,6 +3084,10 @@ void InitializePanelWidgets()
     g_collapseButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCollapseButtonClicked);
     g_forceUnconsciousButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceUnconsciousButtonPressed);
     g_forcePlayingDeadButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForcePlayingDeadButtonPressed);
+    g_damageLeftArmButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftArmButtonPressed);
+    g_damageRightArmButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightArmButtonPressed);
+    g_damageLeftLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftLegButtonPressed);
+    g_damageRightLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightLegButtonPressed);
     g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
     g_headerFrame->eventMouseDrag += MyGUI::newDelegate(&OnHeaderMouseDrag);
@@ -2803,17 +3189,37 @@ void CreatePanelWidgets()
         "Kenshi_Button1",
         MyGUI::IntCoord(20, 272, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
+    g_limbDamageSectionText = g_panel->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(14, 306, kPanelWidth - 28, 18),
+        MyGUI::Align::Default);
+    g_damageLeftArmButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(20, 328, 156, 28),
+        MyGUI::Align::Default);
+    g_damageRightArmButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(184, 328, 156, 28),
+        MyGUI::Align::Default);
+    g_damageLeftLegButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(20, 362, 156, 28),
+        MyGUI::Align::Default);
+    g_damageRightLegButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(184, 362, 156, 28),
+        MyGUI::Align::Default);
     g_dangerousSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 312, kPanelWidth - 28, 18),
+        MyGUI::IntCoord(14, 402, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
     g_forceDyingButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 336, kPanelWidth - 40, 28),
+        MyGUI::IntCoord(20, 424, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_statusText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 362, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 458, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
 
     if (!HasAllPanelWidgets())
