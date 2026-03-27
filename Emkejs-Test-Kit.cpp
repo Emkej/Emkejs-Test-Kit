@@ -5,15 +5,21 @@
 #include <kenshi/Damages.h>
 #include <kenshi/Dialogue.h>
 #include <kenshi/Faction.h>
+#include <kenshi/GameData.h>
 #include <kenshi/GameWorld.h>
 #include <kenshi/Globals.h>
+#include <kenshi/Inventory.h>
+#include <kenshi/Item.h>
 #include <kenshi/Kenshi.h>
 #include <kenshi/MedicalSystem.h>
 #include <kenshi/PlayerInterface.h>
 #include <kenshi/RootObject.h>
+#include <kenshi/RootObjectFactory.h>
 #include <kenshi/SaveManager.h>
 #include <mygui/MyGUI_Button.h>
+#include <mygui/MyGUI_ComboBox.h>
 #include <mygui/MyGUI_Delegate.h>
+#include <mygui/MyGUI_EditBox.h>
 #include <mygui/MyGUI_Gui.h>
 #include <mygui/MyGUI_InputManager.h>
 #include <mygui/MyGUI_RenderManager.h>
@@ -24,9 +30,12 @@
 #include <Windows.h>
 
 #include <cctype>
+#include <algorithm>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -50,6 +59,7 @@ const float kMinimumLimbDamageAmount = 5.0f;
 const char* kTeleportDestinationLabel = "Test Spot";
 const Ogre::Vector3 kTeleportDestinationCenter(-56164.4f, 1605.11f, 20653.6f);
 const float kFloatChangeEpsilon = 0.001f;
+const int kInventoryItemDropdownMaxListLength = 10;
 
 enum LoggingLevel
 {
@@ -68,7 +78,8 @@ enum TargetSource
 enum PanelTab
 {
     PanelTab_Health = 0,
-    PanelTab_Teleport = 1
+    PanelTab_Teleport = 1,
+    PanelTab_Inventory = 2
 };
 
 struct TargetSnapshot
@@ -85,6 +96,13 @@ struct TargetSnapshot
     bool playingDead;
     bool dying;
     bool dead;
+};
+
+struct InventorySpawnOption
+{
+    std::string displayName;
+    std::string searchTextUpper;
+    GameData* itemData;
 };
 
 std::string g_configPath;
@@ -133,7 +151,9 @@ MyGUI::TextBox* g_targetStateText = 0;
 MyGUI::TextBox* g_noTargetText = 0;
 MyGUI::Button* g_healthTabButton = 0;
 MyGUI::Button* g_teleportTabButton = 0;
+MyGUI::Button* g_inventoryTabButton = 0;
 MyGUI::TextBox* g_statesSectionText = 0;
+MyGUI::Button* g_fullRestoreButton = 0;
 MyGUI::Button* g_forceUnconsciousButton = 0;
 MyGUI::Button* g_forcePlayingDeadButton = 0;
 MyGUI::TextBox* g_limbDamageSectionText = 0;
@@ -143,9 +163,25 @@ MyGUI::Button* g_damageLeftLegButton = 0;
 MyGUI::Button* g_damageRightLegButton = 0;
 MyGUI::TextBox* g_teleportSectionText = 0;
 MyGUI::Button* g_teleportSelectedToCameraButton = 0;
+MyGUI::TextBox* g_inventorySectionText = 0;
+MyGUI::TextBox* g_moneyAmountLabelText = 0;
+MyGUI::EditBox* g_moneyAmountEdit = 0;
+MyGUI::Button* g_addMoneyButton = 0;
+MyGUI::TextBox* g_spawnFoodSectionText = 0;
+MyGUI::TextBox* g_itemSearchLabelText = 0;
+MyGUI::EditBox* g_itemSearchEdit = 0;
+MyGUI::TextBox* g_itemDropdownLabelText = 0;
+MyGUI::ComboBox* g_itemDropdown = 0;
+MyGUI::TextBox* g_itemQuantityLabelText = 0;
+MyGUI::EditBox* g_itemQuantityEdit = 0;
+MyGUI::Button* g_spawnItemButton = 0;
 MyGUI::TextBox* g_dangerousSectionText = 0;
 MyGUI::Button* g_forceDyingButton = 0;
 MyGUI::TextBox* g_statusText = 0;
+
+std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
+std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
+bool g_inventoryFoodItemOptionsLoaded = false;
 
 void (*PlayerInterface_updateUT_orig)(PlayerInterface*) = 0;
 void (*SaveManager_loadByInfo_orig)(SaveManager*, const SaveInfo&, bool) = 0;
@@ -224,6 +260,39 @@ std::string ToUpperAscii(const std::string& value)
     return upper;
 }
 
+bool TryParsePositiveInt(const std::string& value, int* outValue)
+{
+    if (!outValue)
+    {
+        return false;
+    }
+
+    const std::string trimmed = TrimAscii(value);
+    if (trimmed.empty())
+    {
+        return false;
+    }
+
+    for (size_t index = 0; index < trimmed.size(); ++index)
+    {
+        if (std::isdigit(static_cast<unsigned char>(trimmed[index])) == 0)
+        {
+            return false;
+        }
+    }
+
+    long long parsed = 0;
+    std::stringstream stream(trimmed);
+    stream >> parsed;
+    if (!stream || !stream.eof() || parsed <= 0 || parsed > std::numeric_limits<int>::max())
+    {
+        return false;
+    }
+
+    *outValue = static_cast<int>(parsed);
+    return true;
+}
+
 std::string SanitizeLogValue(const std::string& value)
 {
     std::string sanitized;
@@ -242,6 +311,35 @@ std::string SanitizeLogValue(const std::string& value)
     }
 
     return sanitized;
+}
+
+std::string BuildInventorySpawnOptionLabel(GameData* itemData)
+{
+    if (!itemData)
+    {
+        return "";
+    }
+
+    const std::string name = TrimAscii(itemData->name);
+    if (!name.empty())
+    {
+        return name;
+    }
+
+    const std::string stringId = TrimAscii(itemData->stringID);
+    if (!stringId.empty())
+    {
+        return stringId;
+    }
+
+    std::stringstream fallback;
+    fallback << "Item " << itemData->id;
+    return fallback.str();
+}
+
+bool DoesInventorySpawnOptionMatchSearch(const InventorySpawnOption& option, const std::string& searchUpper)
+{
+    return searchUpper.empty() || option.searchTextUpper.find(searchUpper) != std::string::npos;
 }
 
 const char* TargetSourceToUiLabel(TargetSource source)
@@ -658,6 +756,151 @@ void SetWidgetVisible(MyGUI::Widget* widget, bool visible)
     }
 }
 
+void RefreshInventoryFoodItemDropdown()
+{
+    if (!g_itemDropdown)
+    {
+        return;
+    }
+
+    g_itemDropdown->removeAllItems();
+    g_filteredInventoryFoodItemOptionIndexes.clear();
+
+    std::string searchUpper;
+    if (g_itemSearchEdit)
+    {
+        searchUpper = ToUpperAscii(TrimAscii(g_itemSearchEdit->getOnlyText().asUTF8()));
+    }
+
+    for (size_t index = 0; index < g_inventoryFoodItemOptions.size(); ++index)
+    {
+        const InventorySpawnOption& option = g_inventoryFoodItemOptions[index];
+        if (!DoesInventorySpawnOptionMatchSearch(option, searchUpper))
+        {
+            continue;
+        }
+
+        g_filteredInventoryFoodItemOptionIndexes.push_back(index);
+        g_itemDropdown->addItem(option.displayName);
+    }
+
+    if (g_filteredInventoryFoodItemOptionIndexes.empty())
+    {
+        if (!g_inventoryFoodItemOptionsLoaded)
+        {
+            g_itemDropdown->addItem("Loading food items...");
+        }
+        else if (g_inventoryFoodItemOptions.empty())
+        {
+            g_itemDropdown->addItem("No food items available");
+        }
+        else
+        {
+            g_itemDropdown->addItem("No matching food items");
+        }
+
+        g_itemDropdown->setIndexSelected(0);
+        return;
+    }
+
+    g_itemDropdown->setIndexSelected(0);
+}
+
+void ResetInventoryFoodItemOptions()
+{
+    g_inventoryFoodItemOptions.clear();
+    g_filteredInventoryFoodItemOptionIndexes.clear();
+    g_inventoryFoodItemOptionsLoaded = false;
+}
+
+void EnsureInventoryFoodItemOptionsLoaded()
+{
+    if (g_inventoryFoodItemOptionsLoaded || !ou || !ou->initialized)
+    {
+        return;
+    }
+
+    lektor<GameData*> itemDatas;
+    ou->gamedata.getDataOfType(itemDatas, ITEM);
+
+    g_inventoryFoodItemOptions.clear();
+
+    for (lektor<GameData*>::const_iterator it = itemDatas.begin(); it != itemDatas.end(); ++it)
+    {
+        GameData* itemData = *it;
+        if (!itemData || !itemData->isValid() || !Item::isFood(itemData))
+        {
+            continue;
+        }
+
+        InventorySpawnOption option;
+        option.displayName = BuildInventorySpawnOptionLabel(itemData);
+        option.searchTextUpper = ToUpperAscii(option.displayName);
+
+        const std::string stringId = TrimAscii(itemData->stringID);
+        if (!stringId.empty())
+        {
+            option.searchTextUpper += " ";
+            option.searchTextUpper += ToUpperAscii(stringId);
+        }
+
+        option.itemData = itemData;
+        g_inventoryFoodItemOptions.push_back(option);
+    }
+
+    std::sort(
+        g_inventoryFoodItemOptions.begin(),
+        g_inventoryFoodItemOptions.end(),
+        [](const InventorySpawnOption& left, const InventorySpawnOption& right)
+        {
+            return left.displayName < right.displayName;
+        });
+
+    g_inventoryFoodItemOptionsLoaded = true;
+    RefreshInventoryFoodItemDropdown();
+}
+
+bool TryResolveSelectedInventoryFoodItem(GameData** itemDataOut, std::string* itemLabelOut)
+{
+    if (itemDataOut)
+    {
+        *itemDataOut = 0;
+    }
+    if (itemLabelOut)
+    {
+        itemLabelOut->clear();
+    }
+
+    if (!g_itemDropdown || g_filteredInventoryFoodItemOptionIndexes.empty())
+    {
+        return false;
+    }
+
+    const size_t selectedIndex = g_itemDropdown->getIndexSelected();
+    if (selectedIndex >= g_filteredInventoryFoodItemOptionIndexes.size())
+    {
+        return false;
+    }
+
+    const InventorySpawnOption& option =
+        g_inventoryFoodItemOptions[g_filteredInventoryFoodItemOptionIndexes[selectedIndex]];
+    if (!option.itemData)
+    {
+        return false;
+    }
+
+    if (itemDataOut)
+    {
+        *itemDataOut = option.itemData;
+    }
+    if (itemLabelOut)
+    {
+        *itemLabelOut = option.displayName;
+    }
+
+    return true;
+}
+
 void UpdatePanelTabButtonCaptions()
 {
     if (g_healthTabButton)
@@ -669,12 +912,18 @@ void UpdatePanelTabButtonCaptions()
     {
         g_teleportTabButton->setCaption(g_activePanelTab == PanelTab_Teleport ? "[Teleport]" : "Teleport");
     }
+
+    if (g_inventoryTabButton)
+    {
+        g_inventoryTabButton->setCaption(g_activePanelTab == PanelTab_Inventory ? "[Inventory]" : "Inventory");
+    }
 }
 
 void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
 {
     const bool healthVisible = bodyVisible && g_activePanelTab == PanelTab_Health;
     const bool teleportVisible = bodyVisible && g_activePanelTab == PanelTab_Teleport;
+    const bool inventoryVisible = bodyVisible && g_activePanelTab == PanelTab_Inventory;
 
     UpdatePanelTabButtonCaptions();
 
@@ -687,8 +936,10 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_noTargetText, bodyVisible);
     SetWidgetVisible(g_healthTabButton, bodyVisible);
     SetWidgetVisible(g_teleportTabButton, bodyVisible);
+    SetWidgetVisible(g_inventoryTabButton, bodyVisible);
 
     SetWidgetVisible(g_statesSectionText, healthVisible);
+    SetWidgetVisible(g_fullRestoreButton, healthVisible);
     SetWidgetVisible(g_forceUnconsciousButton, healthVisible);
     SetWidgetVisible(g_forcePlayingDeadButton, healthVisible);
     SetWidgetVisible(g_limbDamageSectionText, healthVisible);
@@ -894,7 +1145,7 @@ void ApplyPanelLayout(const MyGUI::IntCoord& panelCoord)
 
     if (g_bodyFrame)
     {
-        g_bodyFrame->setCoord(MyGUI::IntCoord(0, 40, kPanelWidth, kPanelExpandedHeight - 40));
+        g_bodyFrame->setCoord(MyGUI::IntCoord(0, 38, kPanelWidth, kPanelExpandedHeight - 38));
         g_bodyFrame->setVisible(bodyVisible);
     }
 
@@ -1071,7 +1322,9 @@ void ResetPanelWidgetPointers()
     g_noTargetText = 0;
     g_healthTabButton = 0;
     g_teleportTabButton = 0;
+    g_inventoryTabButton = 0;
     g_statesSectionText = 0;
+    g_fullRestoreButton = 0;
     g_forceUnconsciousButton = 0;
     g_forcePlayingDeadButton = 0;
     g_limbDamageSectionText = 0;
@@ -1081,6 +1334,18 @@ void ResetPanelWidgetPointers()
     g_damageRightLegButton = 0;
     g_teleportSectionText = 0;
     g_teleportSelectedToCameraButton = 0;
+    g_inventorySectionText = 0;
+    g_moneyAmountLabelText = 0;
+    g_moneyAmountEdit = 0;
+    g_addMoneyButton = 0;
+    g_spawnFoodSectionText = 0;
+    g_itemSearchLabelText = 0;
+    g_itemSearchEdit = 0;
+    g_itemDropdownLabelText = 0;
+    g_itemDropdown = 0;
+    g_itemQuantityLabelText = 0;
+    g_itemQuantityEdit = 0;
+    g_spawnItemButton = 0;
     g_dangerousSectionText = 0;
     g_forceDyingButton = 0;
     g_statusText = 0;
@@ -1793,6 +2058,10 @@ bool TryResolveStateSummary(
 
 void SetActionButtonsEnabled(bool enabled)
 {
+    if (g_fullRestoreButton)
+    {
+        g_fullRestoreButton->setEnabled(enabled);
+    }
     if (g_forceUnconsciousButton)
     {
         g_forceUnconsciousButton->setEnabled(enabled);
@@ -1820,6 +2089,14 @@ void SetActionButtonsEnabled(bool enabled)
     if (g_forceDyingButton)
     {
         g_forceDyingButton->setEnabled(enabled);
+    }
+    if (g_addMoneyButton)
+    {
+        g_addMoneyButton->setEnabled(enabled);
+    }
+    if (g_spawnItemButton)
+    {
+        g_spawnItemButton->setEnabled(enabled);
     }
 }
 
@@ -1970,6 +2247,8 @@ void BuildTargetSnapshot(PlayerInterface* player, Character* target, TargetSourc
 
 void UpdateTargetInspection(PlayerInterface* player)
 {
+    EnsureInventoryFoodItemOptionsLoaded();
+
     TargetSnapshot snapshot;
     ResetTargetSnapshot(&snapshot);
 
@@ -2036,6 +2315,237 @@ bool TryForceUnconscious(Character* target, bool alreadyUnconscious, float* knoc
         if (knockoutTimerOut)
         {
             *knockoutTimerOut = medical->knockoutTimer;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool TryFullRestore(Character* target, bool* fullyRestoredOut, float* bloodOut, float* maxBloodOut)
+{
+    if (fullyRestoredOut)
+    {
+        *fullyRestoredOut = false;
+    }
+    if (bloodOut)
+    {
+        *bloodOut = 0.0f;
+    }
+    if (maxBloodOut)
+    {
+        *maxBloodOut = 0.0f;
+    }
+
+    if (!target)
+    {
+        return false;
+    }
+
+    __try
+    {
+        MedicalSystem* medical = target->getMedical();
+        if (!medical)
+        {
+            return false;
+        }
+
+        target->healCompletely();
+        target->playerWantsMeToGetUp = true;
+
+        const ProneState proneState = target->_NV_getProneState();
+        if (proneState == PS_KO || proneState == PS_PLAYING_DEAD || proneState == PS_CRIPPLED)
+        {
+            target->_NV_setProneState(PS_NORMAL);
+        }
+
+        const float maxBlood = medical->getMaxBlood();
+        medical->blood = maxBlood;
+        medical->knockoutTimer = 0.0f;
+        medical->currentBleedRate = 0.0f;
+        medical->extraBloodLossFromBodyparts = 0.0f;
+        medical->crippled = false;
+        medical->unconcious = false;
+        medical->sub50KO = false;
+        medical->bloodlossTrauma = false;
+        medical->validateHealthValues();
+
+        bool fullyRestored = true;
+        const int partCount = medical->getPartCount();
+        for (int index = 0; index < partCount; ++index)
+        {
+            MedicalSystem::HealthPartStatus* part = medical->getPart(static_cast<unsigned __int64>(index));
+            if (!part)
+            {
+                fullyRestored = false;
+                break;
+            }
+
+            part->updateDerivedHealths();
+
+            if ((part->maxHealth() - part->flesh > kFloatChangeEpsilon)
+                || (part->flesh - part->maxHealth() > kFloatChangeEpsilon)
+                || (part->fleshStun > kFloatChangeEpsilon)
+                || (part->wearDamage > kFloatChangeEpsilon)
+                || (1.0f - part->derivedFleshHealthPercent > kFloatChangeEpsilon))
+            {
+                fullyRestored = false;
+                break;
+            }
+        }
+
+        medical->updateDamageState();
+        medical->reassessCollapseMode(false, false);
+
+        if (fullyRestoredOut)
+        {
+            *fullyRestoredOut = fullyRestored
+                && (maxBlood - medical->blood <= kFloatChangeEpsilon)
+                && (medical->currentBleedRate <= kFloatChangeEpsilon)
+                && (medical->extraBloodLossFromBodyparts <= kFloatChangeEpsilon)
+                && !medical->unconcious
+                && !medical->sub50KO
+                && !medical->bloodlossTrauma
+                && !medical->dead;
+        }
+        if (bloodOut)
+        {
+            *bloodOut = medical->blood;
+        }
+        if (maxBloodOut)
+        {
+            *maxBloodOut = maxBlood;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool TryAddMoneyToTargetPlatoon(Character* target, int amount, int* beforeMoneyOut, int* afterMoneyOut)
+{
+    if (beforeMoneyOut)
+    {
+        *beforeMoneyOut = 0;
+    }
+    if (afterMoneyOut)
+    {
+        *afterMoneyOut = 0;
+    }
+
+    if (!target || amount <= 0)
+    {
+        return false;
+    }
+
+    __try
+    {
+        const int beforeMoney = target->getMoney();
+        Inventory* inventory = target->getInventory();
+        int beforeInventoryMoney = beforeMoney;
+        if (inventory)
+        {
+            beforeInventoryMoney = inventory->getMoney();
+        }
+
+        target->takeMoney(-amount);
+        if (inventory)
+        {
+            inventory->refreshGui();
+        }
+
+        int afterMoney = target->getMoney();
+        if (afterMoney - beforeMoney != amount && inventory)
+        {
+            inventory->takeMoney(-amount);
+            inventory->refreshGui();
+            afterMoney = target->getMoney();
+
+            const int afterInventoryMoney = inventory->getMoney();
+            if (afterMoney - beforeMoney != amount && afterInventoryMoney - beforeInventoryMoney == amount)
+            {
+                afterMoney = afterInventoryMoney;
+            }
+        }
+
+        if (beforeMoneyOut)
+        {
+            *beforeMoneyOut = beforeMoney;
+        }
+        if (afterMoneyOut)
+        {
+            *afterMoneyOut = afterMoney;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool TrySpawnItemInTargetInventory(
+    Character* target,
+    GameData* itemData,
+    int quantity,
+    int* beforeCountOut,
+    int* afterCountOut,
+    bool* addAcceptedOut)
+{
+    if (beforeCountOut)
+    {
+        *beforeCountOut = 0;
+    }
+    if (afterCountOut)
+    {
+        *afterCountOut = 0;
+    }
+    if (addAcceptedOut)
+    {
+        *addAcceptedOut = false;
+    }
+
+    if (!target || !itemData || quantity <= 0 || !ou || !ou->theFactory)
+    {
+        return false;
+    }
+
+    __try
+    {
+        Inventory* inventory = target->getInventory();
+        if (!inventory)
+        {
+            return false;
+        }
+
+        const int beforeCount = inventory->countItems(itemData);
+        Item* item = ou->theFactory->createItem(itemData, hand(), 0, 0, 0, 0);
+        if (!item)
+        {
+            return false;
+        }
+
+        const bool addAccepted = inventory->addItem(item, quantity, false, true);
+        const int afterCount = inventory->countItems(itemData);
+
+        if (beforeCountOut)
+        {
+            *beforeCountOut = beforeCount;
+        }
+        if (afterCountOut)
+        {
+            *afterCountOut = afterCount;
+        }
+        if (addAcceptedOut)
+        {
+            *addAcceptedOut = addAccepted;
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -2804,6 +3314,355 @@ void OnForcePlayingDeadButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButto
     }
 }
 
+void OnFullRestoreButtonClicked(MyGUI::Widget*)
+{
+    const char* actionId = "full_restore";
+    LogActionRequested(actionId);
+
+    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
+    {
+        LogInfoLine("event=testkit_action_result action=\"full_restore\" success=false reason=\"no_target\"");
+        SetStatusMessage("No target - select a character");
+        return;
+    }
+
+    if (g_lastTargetSnapshot.dead)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"full_restore\" success=false reason=\"target_dead\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Full Restore failed - target is dead");
+        return;
+    }
+
+    const Character* const expectedTarget = g_lastTargetSnapshot.target;
+    const std::string targetName = g_lastTargetSnapshot.name;
+
+    bool fullyRestored = false;
+    float bloodLevel = 0.0f;
+    float maxBlood = 0.0f;
+    if (!TryFullRestore(g_lastTargetSnapshot.target, &fullyRestored, &bloodLevel, &maxBlood))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"full_restore\" success=false reason=\"apply_failed\""
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Full Restore failed - apply path unavailable");
+        return;
+    }
+
+    ClearForceDyingArm("full_restore", false);
+
+    std::string observedStateLabel = "Unknown";
+    bool observedUnconscious = false;
+    bool observedPlayingDead = false;
+    bool observedDying = false;
+    bool observedDead = false;
+    if (g_lastPlayerInterface)
+    {
+        UpdateTargetInspection(g_lastPlayerInterface);
+        if (g_hasLastTargetSnapshot
+            && g_lastTargetSnapshot.hasTarget
+            && g_lastTargetSnapshot.target == expectedTarget)
+        {
+            observedStateLabel = g_lastTargetSnapshot.stateLabel;
+            observedUnconscious = g_lastTargetSnapshot.unconscious;
+            observedPlayingDead = g_lastTargetSnapshot.playingDead;
+            observedDying = g_lastTargetSnapshot.dying;
+            observedDead = g_lastTargetSnapshot.dead;
+        }
+    }
+    else
+    {
+        TryResolveStateSummary(
+            g_lastTargetSnapshot.target,
+            &observedStateLabel,
+            &observedUnconscious,
+            &observedPlayingDead,
+            &observedDying,
+            &observedDead);
+    }
+
+    const bool observedRecovered = !observedUnconscious && !observedPlayingDead && !observedDying && !observedDead;
+    const bool success = fullyRestored && observedRecovered;
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"full_restore\" success="
+           << (success ? "true" : "false")
+           << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+           << " fully_restored=" << (fullyRestored ? "true" : "false")
+           << " observed_state=\"" << observedStateLabel << "\""
+           << " observed_unconscious=" << (observedUnconscious ? "true" : "false")
+           << " observed_playing_dead=" << (observedPlayingDead ? "true" : "false")
+           << " observed_dying=" << (observedDying ? "true" : "false")
+           << " observed_dead=" << (observedDead ? "true" : "false")
+           << " blood=" << bloodLevel
+           << " max_blood=" << maxBlood;
+    if (!success)
+    {
+        result << " reason=\"not_fully_observed_after_apply\"";
+    }
+    LogInfoLine(result.str());
+
+    if (success)
+    {
+        SetStatusMessage("Full Restore applied to " + targetName);
+        return;
+    }
+
+    SetStatusMessage("Full Restore requested for " + targetName + " - no full restore readback yet");
+}
+
+void OnFullRestoreButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnFullRestoreButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnAddMoneyButtonClicked(MyGUI::Widget*)
+{
+    const char* actionId = "add_money";
+    LogActionRequested(actionId);
+
+    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
+    {
+        LogInfoLine("event=testkit_action_result action=\"add_money\" success=false reason=\"no_target\"");
+        SetStatusMessage("No target - select a character");
+        return;
+    }
+
+    if (!g_moneyAmountEdit)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"add_money\" success=false reason=\"missing_input_widget\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Add Money failed - amount input unavailable");
+        return;
+    }
+
+    const std::string amountText = TrimAscii(g_moneyAmountEdit->getOnlyText().asUTF8());
+    int amount = 0;
+    if (!TryParsePositiveInt(amountText, &amount))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"add_money\" success=false reason=\"invalid_amount\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\""
+               << " amount_text=\"" << SanitizeLogValue(amountText) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Add Money failed - enter a positive amount");
+        return;
+    }
+
+    g_moneyAmountEdit->setOnlyText(amountText);
+
+    const std::string targetName = g_lastTargetSnapshot.name;
+    int beforeMoney = 0;
+    int afterMoney = 0;
+    if (!TryAddMoneyToTargetPlatoon(g_lastTargetSnapshot.target, amount, &beforeMoney, &afterMoney))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"add_money\" success=false reason=\"apply_failed\""
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+               << " amount=" << amount;
+        LogInfoLine(result.str());
+        SetStatusMessage("Add Money failed - target money path unavailable");
+        return;
+    }
+
+    const long long observedDelta = static_cast<long long>(afterMoney) - static_cast<long long>(beforeMoney);
+    const bool success = observedDelta == static_cast<long long>(amount);
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"add_money\" success="
+           << (success ? "true" : "false")
+           << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+           << " amount=" << amount
+           << " before_money=" << beforeMoney
+           << " after_money=" << afterMoney
+           << " observed_delta=" << observedDelta;
+    if (!success)
+    {
+        result << " reason=\"not_observed_after_apply\"";
+    }
+    LogInfoLine(result.str());
+
+    if (success)
+    {
+        std::stringstream status;
+        status << "Added " << amount << " Cats to " << targetName;
+        SetStatusMessage(status.str());
+        return;
+    }
+
+    std::stringstream status;
+    status << "Add Money requested for " << targetName << " - no money change readback yet";
+    SetStatusMessage(status.str());
+}
+
+void OnAddMoneyButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnAddMoneyButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnInventoryItemSearchTextChanged(MyGUI::EditBox*)
+{
+    EnsureInventoryFoodItemOptionsLoaded();
+    RefreshInventoryFoodItemDropdown();
+}
+
+void OnSpawnItemButtonClicked(MyGUI::Widget*)
+{
+    const char* actionId = "spawn_inventory_item";
+    LogActionRequested(actionId);
+
+    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
+    {
+        LogInfoLine("event=testkit_action_result action=\"spawn_inventory_item\" success=false reason=\"no_target\"");
+        SetStatusMessage("No target - select a character");
+        return;
+    }
+
+    if (!g_itemQuantityEdit)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"spawn_inventory_item\" success=false reason=\"missing_quantity_widget\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Spawn Item failed - quantity input unavailable");
+        return;
+    }
+
+    EnsureInventoryFoodItemOptionsLoaded();
+
+    GameData* itemData = 0;
+    std::string itemLabel;
+    if (!TryResolveSelectedInventoryFoodItem(&itemData, &itemLabel))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"spawn_inventory_item\" success=false reason=\"no_item_selected\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Spawn Item failed - select a food item");
+        return;
+    }
+
+    const std::string quantityText = TrimAscii(g_itemQuantityEdit->getOnlyText().asUTF8());
+    int quantity = 0;
+    if (!TryParsePositiveInt(quantityText, &quantity))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"spawn_inventory_item\" success=false reason=\"invalid_quantity\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\""
+               << " quantity_text=\"" << SanitizeLogValue(quantityText) << "\""
+               << " item_name=\"" << SanitizeLogValue(itemLabel) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Spawn Item failed - enter a positive quantity");
+        return;
+    }
+
+    g_itemQuantityEdit->setOnlyText(quantityText);
+
+    const std::string targetName = g_lastTargetSnapshot.name;
+    bool addAccepted = false;
+    int beforeCount = 0;
+    int afterCount = 0;
+    if (!TrySpawnItemInTargetInventory(
+            g_lastTargetSnapshot.target,
+            itemData,
+            quantity,
+            &beforeCount,
+            &afterCount,
+            &addAccepted))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"spawn_inventory_item\" success=false reason=\"apply_failed\""
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+               << " item_name=\"" << SanitizeLogValue(itemLabel) << "\""
+               << " quantity=" << quantity;
+        LogInfoLine(result.str());
+        SetStatusMessage("Spawn Item failed - target inventory unavailable");
+        return;
+    }
+
+    const int observedDelta = afterCount - beforeCount;
+    const bool success = addAccepted && observedDelta == quantity;
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"spawn_inventory_item\" success="
+           << (success ? "true" : "false")
+           << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+           << " item_name=\"" << SanitizeLogValue(itemLabel) << "\""
+           << " quantity=" << quantity
+           << " add_accepted=" << (addAccepted ? "true" : "false")
+           << " before_count=" << beforeCount
+           << " after_count=" << afterCount
+           << " observed_delta=" << observedDelta;
+    if (!addAccepted)
+    {
+        result << " reason=\"inventory_rejected_add\"";
+    }
+    else if (!success)
+    {
+        result << " reason=\"not_observed_after_apply\"";
+    }
+    LogInfoLine(result.str());
+
+    if (success)
+    {
+        std::stringstream status;
+        status << "Spawned " << quantity << " " << itemLabel << " for " << targetName;
+        SetStatusMessage(status.str());
+        return;
+    }
+
+    if (!addAccepted)
+    {
+        SetStatusMessage("Spawn Item failed - inventory rejected the item");
+        return;
+    }
+
+    SetStatusMessage("Spawn Item requested for " + targetName + " - no full inventory readback yet");
+}
+
+void OnSpawnItemButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnSpawnItemButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnDamageLimbButtonClicked(
     const char* actionId,
     const char* actionLabel,
@@ -3142,6 +4001,24 @@ void OnTeleportTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
     }
 }
 
+void OnInventoryTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    EnsureInventoryFoodItemOptionsLoaded();
+    RefreshInventoryFoodItemDropdown();
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    SetActivePanelTab(PanelTab_Inventory);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnForceDyingButtonClicked(MyGUI::Widget*)
 {
     if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
@@ -3306,6 +4183,40 @@ void ConfigureTextWidget(MyGUI::TextBox* widget)
     widget->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
 }
 
+void ConfigureEditBoxWidget(MyGUI::EditBox* widget)
+{
+    if (!widget)
+    {
+        return;
+    }
+
+    MyGUI::Widget* clientWidget = widget->getClientWidget();
+    if (clientWidget)
+    {
+        clientWidget->setAlign(MyGUI::Align::Stretch);
+    }
+
+    widget->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
+}
+
+void ConfigureComboBoxWidget(MyGUI::ComboBox* widget)
+{
+    if (!widget)
+    {
+        return;
+    }
+
+    MyGUI::Widget* clientWidget = widget->getClientWidget();
+    if (clientWidget)
+    {
+        clientWidget->setAlign(MyGUI::Align::Stretch);
+    }
+
+    widget->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
+    widget->setComboModeDrop(true);
+    widget->setMaxListLength(kInventoryItemDropdownMaxListLength);
+}
+
 bool HasAllPanelWidgets()
 {
     return g_panel
@@ -3322,7 +4233,9 @@ bool HasAllPanelWidgets()
         && g_noTargetText
         && g_healthTabButton
         && g_teleportTabButton
+        && g_inventoryTabButton
         && g_statesSectionText
+        && g_fullRestoreButton
         && g_forceUnconsciousButton
         && g_forcePlayingDeadButton
         && g_limbDamageSectionText
@@ -3332,6 +4245,18 @@ bool HasAllPanelWidgets()
         && g_damageRightLegButton
         && g_teleportSectionText
         && g_teleportSelectedToCameraButton
+        && g_inventorySectionText
+        && g_moneyAmountLabelText
+        && g_moneyAmountEdit
+        && g_addMoneyButton
+        && g_spawnFoodSectionText
+        && g_itemSearchLabelText
+        && g_itemSearchEdit
+        && g_itemDropdownLabelText
+        && g_itemDropdown
+        && g_itemQuantityLabelText
+        && g_itemQuantityEdit
+        && g_spawnItemButton
         && g_dangerousSectionText
         && g_forceDyingButton
         && g_statusText;
@@ -3367,8 +4292,18 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_statesSectionText);
     ConfigureTextWidget(g_limbDamageSectionText);
     ConfigureTextWidget(g_teleportSectionText);
+    ConfigureTextWidget(g_inventorySectionText);
+    ConfigureTextWidget(g_moneyAmountLabelText);
+    ConfigureTextWidget(g_spawnFoodSectionText);
+    ConfigureTextWidget(g_itemSearchLabelText);
+    ConfigureTextWidget(g_itemDropdownLabelText);
+    ConfigureTextWidget(g_itemQuantityLabelText);
     ConfigureTextWidget(g_dangerousSectionText);
     ConfigureTextWidget(g_statusText);
+    ConfigureEditBoxWidget(g_moneyAmountEdit);
+    ConfigureEditBoxWidget(g_itemSearchEdit);
+    ConfigureEditBoxWidget(g_itemQuantityEdit);
+    ConfigureComboBoxWidget(g_itemDropdown);
 
     g_targetSectionText->setCaption("Target");
     g_targetNameText->setCaption("Name: Pending target inspection");
@@ -3381,8 +4316,15 @@ void InitializePanelWidgets()
     g_statesSectionText->setCaption("States");
     g_limbDamageSectionText->setCaption("Limb Damage");
     g_teleportSectionText->setCaption("Teleport");
+    g_inventorySectionText->setCaption("Inventory");
+    g_moneyAmountLabelText->setCaption("Cats To Add");
+    g_spawnFoodSectionText->setCaption("Spawn Food");
+    g_itemSearchLabelText->setCaption("Search");
+    g_itemDropdownLabelText->setCaption("Food Item");
+    g_itemQuantityLabelText->setCaption("Quantity");
     g_dangerousSectionText->setCaption("Dangerous");
 
+    g_fullRestoreButton->setCaption("Full Restore");
     g_forceUnconsciousButton->setCaption("Force Unconscious");
     g_forcePlayingDeadButton->setCaption("Force Playing Dead");
     g_damageLeftArmButton->setCaption("Damage Left Arm");
@@ -3390,6 +4332,19 @@ void InitializePanelWidgets()
     g_damageLeftLegButton->setCaption("Damage Left Leg");
     g_damageRightLegButton->setCaption("Damage Right Leg");
     g_teleportSelectedToCameraButton->setCaption(std::string("Teleport Selected To ") + kTeleportDestinationLabel);
+    g_moneyAmountEdit->setEditStatic(false);
+    g_moneyAmountEdit->setMaxTextLength(10);
+    g_moneyAmountEdit->setOnlyText("1000");
+    g_addMoneyButton->setCaption("Add Money");
+    g_itemSearchEdit->setEditStatic(false);
+    g_itemSearchEdit->setMaxTextLength(48);
+    g_itemSearchEdit->setOnlyText("");
+    g_itemQuantityEdit->setEditStatic(false);
+    g_itemQuantityEdit->setMaxTextLength(10);
+    g_itemQuantityEdit->setOnlyText("1");
+    g_spawnItemButton->setCaption("Spawn Item");
+    EnsureInventoryFoodItemOptionsLoaded();
+    RefreshInventoryFoodItemDropdown();
     UpdateForceDyingButtonCaption();
     UpdateCollapseButtonCaption();
     RefreshStatusWidget();
@@ -3399,6 +4354,8 @@ void InitializePanelWidgets()
     g_collapseButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCollapseButtonClicked);
     g_healthTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnHealthTabButtonPressed);
     g_teleportTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportTabButtonPressed);
+    g_inventoryTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventoryTabButtonPressed);
+    g_fullRestoreButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnFullRestoreButtonPressed);
     g_forceUnconsciousButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceUnconsciousButtonPressed);
     g_forcePlayingDeadButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForcePlayingDeadButtonPressed);
     g_damageLeftArmButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftArmButtonPressed);
@@ -3406,6 +4363,9 @@ void InitializePanelWidgets()
     g_damageLeftLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftLegButtonPressed);
     g_damageRightLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightLegButtonPressed);
     g_teleportSelectedToCameraButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportSelectedToCameraButtonPressed);
+    g_addMoneyButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnAddMoneyButtonPressed);
+    g_itemSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnInventoryItemSearchTextChanged);
+    g_spawnItemButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnItemButtonPressed);
     g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
     g_headerFrame->eventMouseDrag += MyGUI::newDelegate(&OnHeaderMouseDrag);
@@ -3465,7 +4425,7 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_bodyFrame = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(0, 40, kPanelWidth, kPanelExpandedHeight - 40),
+        MyGUI::IntCoord(0, 38, kPanelWidth, kPanelExpandedHeight - 38),
         MyGUI::Align::Default);
     g_targetSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
@@ -3497,43 +4457,51 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_healthTabButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 170, 156, 28),
+        MyGUI::IntCoord(20, 170, 106, 28),
         MyGUI::Align::Default);
     g_teleportTabButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(184, 170, 156, 28),
+        MyGUI::IntCoord(127, 170, 106, 28),
+        MyGUI::Align::Default);
+    g_inventoryTabButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(234, 170, 106, 28),
         MyGUI::Align::Default);
     g_statesSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
         MyGUI::IntCoord(14, 208, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
-    g_forceUnconsciousButton = g_panel->createWidget<MyGUI::Button>(
+    g_fullRestoreButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
         MyGUI::IntCoord(20, 230, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
-    g_forcePlayingDeadButton = g_panel->createWidget<MyGUI::Button>(
+    g_forceUnconsciousButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
         MyGUI::IntCoord(20, 264, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
+    g_forcePlayingDeadButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(20, 298, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
     g_limbDamageSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 298, kPanelWidth - 28, 18),
+        MyGUI::IntCoord(14, 332, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
     g_damageLeftArmButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 320, 156, 28),
+        MyGUI::IntCoord(20, 354, 156, 28),
         MyGUI::Align::Default);
     g_damageRightArmButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(184, 320, 156, 28),
+        MyGUI::IntCoord(184, 354, 156, 28),
         MyGUI::Align::Default);
     g_damageLeftLegButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 354, 156, 28),
+        MyGUI::IntCoord(20, 388, 156, 28),
         MyGUI::Align::Default);
     g_damageRightLegButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(184, 354, 156, 28),
+        MyGUI::IntCoord(184, 388, 156, 28),
         MyGUI::Align::Default);
     g_teleportSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
@@ -3543,13 +4511,61 @@ void CreatePanelWidgets()
         "Kenshi_Button1",
         MyGUI::IntCoord(20, 230, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
+    g_inventorySectionText = g_panel->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(14, 208, kPanelWidth - 28, 18),
+        MyGUI::Align::Default);
+    g_moneyAmountLabelText = g_panel->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(20, 230, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_moneyAmountEdit = g_panel->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        MyGUI::IntCoord(20, 252, 156, 28),
+        MyGUI::Align::Default);
+    g_addMoneyButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(184, 252, 156, 28),
+        MyGUI::Align::Default);
+    g_spawnFoodSectionText = g_panel->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(14, 296, kPanelWidth - 28, 18),
+        MyGUI::Align::Default);
+    g_itemSearchLabelText = g_panel->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(20, 318, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_itemSearchEdit = g_panel->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        MyGUI::IntCoord(20, 340, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_itemDropdownLabelText = g_panel->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(20, 374, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_itemDropdown = g_panel->createWidget<MyGUI::ComboBox>(
+        "Kenshi_ComboBox",
+        MyGUI::IntCoord(20, 396, kPanelWidth - 40, 30),
+        MyGUI::Align::Default);
+    g_itemQuantityLabelText = g_panel->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(20, 432, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_itemQuantityEdit = g_panel->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        MyGUI::IntCoord(20, 454, 156, 28),
+        MyGUI::Align::Default);
+    g_spawnItemButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(184, 454, 156, 28),
+        MyGUI::Align::Default);
     g_dangerousSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 394, kPanelWidth - 28, 18),
+        MyGUI::IntCoord(14, 428, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
     g_forceDyingButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 416, kPanelWidth - 40, 28),
+        MyGUI::IntCoord(20, 450, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_statusText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
@@ -3607,6 +4623,7 @@ void OnSaveLoadTransitionStart(const char* source)
     g_lastPlayerInterface = 0;
     g_hotkeyPrevDown = false;
     g_lastStatusMessage = "Ready";
+    ResetInventoryFoodItemOptions();
     ResetTargetSnapshot(&g_lastTargetSnapshot);
     g_hasLastTargetSnapshot = false;
 }
