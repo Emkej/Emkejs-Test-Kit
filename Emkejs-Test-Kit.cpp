@@ -65,6 +65,12 @@ enum TargetSource
     TargetSource_Conversation = 3
 };
 
+enum PanelTab
+{
+    PanelTab_Health = 0,
+    PanelTab_Teleport = 1
+};
+
 struct TargetSnapshot
 {
     bool hasTarget;
@@ -108,6 +114,7 @@ DWORD g_forceDyingArmedAtMs = 0;
 std::string g_lastStatusMessage = "Ready";
 TargetSnapshot g_lastTargetSnapshot;
 bool g_hasLastTargetSnapshot = false;
+PanelTab g_activePanelTab = PanelTab_Health;
 
 PlayerInterface* g_lastPlayerInterface = 0;
 bool g_loggedPanelCreateFailure = false;
@@ -124,6 +131,8 @@ MyGUI::TextBox* g_targetAlignmentText = 0;
 MyGUI::TextBox* g_targetMembershipText = 0;
 MyGUI::TextBox* g_targetStateText = 0;
 MyGUI::TextBox* g_noTargetText = 0;
+MyGUI::Button* g_healthTabButton = 0;
+MyGUI::Button* g_teleportTabButton = 0;
 MyGUI::TextBox* g_statesSectionText = 0;
 MyGUI::Button* g_forceUnconsciousButton = 0;
 MyGUI::Button* g_forcePlayingDeadButton = 0;
@@ -641,6 +650,61 @@ void UpdateCollapseButtonCaption()
     g_collapseButton->setCaption(g_panelCollapsed ? "Expand" : "Collapse");
 }
 
+void SetWidgetVisible(MyGUI::Widget* widget, bool visible)
+{
+    if (widget)
+    {
+        widget->setVisible(visible);
+    }
+}
+
+void UpdatePanelTabButtonCaptions()
+{
+    if (g_healthTabButton)
+    {
+        g_healthTabButton->setCaption(g_activePanelTab == PanelTab_Health ? "[Health]" : "Health");
+    }
+
+    if (g_teleportTabButton)
+    {
+        g_teleportTabButton->setCaption(g_activePanelTab == PanelTab_Teleport ? "[Teleport]" : "Teleport");
+    }
+}
+
+void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
+{
+    const bool healthVisible = bodyVisible && g_activePanelTab == PanelTab_Health;
+    const bool teleportVisible = bodyVisible && g_activePanelTab == PanelTab_Teleport;
+
+    UpdatePanelTabButtonCaptions();
+
+    SetWidgetVisible(g_targetSectionText, bodyVisible);
+    SetWidgetVisible(g_targetNameText, bodyVisible);
+    SetWidgetVisible(g_targetFactionText, bodyVisible);
+    SetWidgetVisible(g_targetAlignmentText, bodyVisible);
+    SetWidgetVisible(g_targetMembershipText, bodyVisible);
+    SetWidgetVisible(g_targetStateText, bodyVisible);
+    SetWidgetVisible(g_noTargetText, bodyVisible);
+    SetWidgetVisible(g_healthTabButton, bodyVisible);
+    SetWidgetVisible(g_teleportTabButton, bodyVisible);
+
+    SetWidgetVisible(g_statesSectionText, healthVisible);
+    SetWidgetVisible(g_forceUnconsciousButton, healthVisible);
+    SetWidgetVisible(g_forcePlayingDeadButton, healthVisible);
+    SetWidgetVisible(g_limbDamageSectionText, healthVisible);
+    SetWidgetVisible(g_damageLeftArmButton, healthVisible);
+    SetWidgetVisible(g_damageRightArmButton, healthVisible);
+    SetWidgetVisible(g_damageLeftLegButton, healthVisible);
+    SetWidgetVisible(g_damageRightLegButton, healthVisible);
+    SetWidgetVisible(g_dangerousSectionText, healthVisible);
+    SetWidgetVisible(g_forceDyingButton, healthVisible);
+
+    SetWidgetVisible(g_teleportSectionText, teleportVisible);
+    SetWidgetVisible(g_teleportSelectedToCameraButton, teleportVisible);
+
+    SetWidgetVisible(g_statusText, bodyVisible);
+}
+
 void ClearForceDyingArm(const char* reason, bool updateStatus)
 {
     if (!g_forceDyingArmed)
@@ -834,58 +898,7 @@ void ApplyPanelLayout(const MyGUI::IntCoord& panelCoord)
         g_bodyFrame->setVisible(bodyVisible);
     }
 
-    if (g_targetSectionText)
-    {
-        g_targetSectionText->setVisible(bodyVisible);
-    }
-    if (g_targetNameText)
-    {
-        g_targetNameText->setVisible(bodyVisible);
-    }
-    if (g_targetFactionText)
-    {
-        g_targetFactionText->setVisible(bodyVisible);
-    }
-    if (g_targetAlignmentText)
-    {
-        g_targetAlignmentText->setVisible(bodyVisible);
-    }
-    if (g_targetMembershipText)
-    {
-        g_targetMembershipText->setVisible(bodyVisible);
-    }
-    if (g_targetStateText)
-    {
-        g_targetStateText->setVisible(bodyVisible);
-    }
-    if (g_noTargetText)
-    {
-        g_noTargetText->setVisible(bodyVisible);
-    }
-    if (g_statesSectionText)
-    {
-        g_statesSectionText->setVisible(bodyVisible);
-    }
-    if (g_forceUnconsciousButton)
-    {
-        g_forceUnconsciousButton->setVisible(bodyVisible);
-    }
-    if (g_forcePlayingDeadButton)
-    {
-        g_forcePlayingDeadButton->setVisible(bodyVisible);
-    }
-    if (g_dangerousSectionText)
-    {
-        g_dangerousSectionText->setVisible(bodyVisible);
-    }
-    if (g_forceDyingButton)
-    {
-        g_forceDyingButton->setVisible(bodyVisible);
-    }
-    if (g_statusText)
-    {
-        g_statusText->setVisible(bodyVisible);
-    }
+    UpdatePanelBodyWidgetVisibility(bodyVisible);
 }
 
 void ApplyPanelLayout()
@@ -1056,6 +1069,8 @@ void ResetPanelWidgetPointers()
     g_targetMembershipText = 0;
     g_targetStateText = 0;
     g_noTargetText = 0;
+    g_healthTabButton = 0;
+    g_teleportTabButton = 0;
     g_statesSectionText = 0;
     g_forceUnconsciousButton = 0;
     g_forcePlayingDeadButton = 0;
@@ -3084,6 +3099,49 @@ void OnTeleportSelectedToCameraButtonPressed(MyGUI::Widget*, int, int, MyGUI::Mo
     }
 }
 
+void SetActivePanelTab(PanelTab tab)
+{
+    if (g_activePanelTab == tab)
+    {
+        return;
+    }
+
+    g_activePanelTab = tab;
+    ApplyPanelLayout();
+}
+
+void OnHealthTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    SetActivePanelTab(PanelTab_Health);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnTeleportTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    SetActivePanelTab(PanelTab_Teleport);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnForceDyingButtonClicked(MyGUI::Widget*)
 {
     if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
@@ -3262,6 +3320,8 @@ bool HasAllPanelWidgets()
         && g_targetMembershipText
         && g_targetStateText
         && g_noTargetText
+        && g_healthTabButton
+        && g_teleportTabButton
         && g_statesSectionText
         && g_forceUnconsciousButton
         && g_forcePlayingDeadButton
@@ -3317,6 +3377,7 @@ void InitializePanelWidgets()
     g_targetMembershipText->setCaption("Membership: Unknown");
     g_targetStateText->setCaption("State: Unknown");
     g_noTargetText->setCaption("No target - select a character");
+    UpdatePanelTabButtonCaptions();
     g_statesSectionText->setCaption("States");
     g_limbDamageSectionText->setCaption("Limb Damage");
     g_teleportSectionText->setCaption("Teleport");
@@ -3336,6 +3397,8 @@ void InitializePanelWidgets()
     SetSelectionActionButtonsEnabled(false);
 
     g_collapseButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCollapseButtonClicked);
+    g_healthTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnHealthTabButtonPressed);
+    g_teleportTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportTabButtonPressed);
     g_forceUnconsciousButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceUnconsciousButtonPressed);
     g_forcePlayingDeadButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForcePlayingDeadButtonPressed);
     g_damageLeftArmButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftArmButtonPressed);
@@ -3410,75 +3473,83 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_targetNameText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 74, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 74, 156, 18),
         MyGUI::Align::Default);
     g_targetFactionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 96, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(184, 74, 156, 18),
         MyGUI::Align::Default);
     g_targetAlignmentText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 118, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 96, 156, 18),
         MyGUI::Align::Default);
     g_targetMembershipText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 140, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(184, 96, 156, 18),
         MyGUI::Align::Default);
     g_targetStateText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 162, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 118, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_noTargetText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 188, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 140, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_healthTabButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(20, 170, 156, 28),
+        MyGUI::Align::Default);
+    g_teleportTabButton = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(184, 170, 156, 28),
         MyGUI::Align::Default);
     g_statesSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 216, kPanelWidth - 28, 18),
+        MyGUI::IntCoord(14, 208, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
     g_forceUnconsciousButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 238, kPanelWidth - 40, 28),
+        MyGUI::IntCoord(20, 230, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_forcePlayingDeadButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 272, kPanelWidth - 40, 28),
+        MyGUI::IntCoord(20, 264, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_limbDamageSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 306, kPanelWidth - 28, 18),
+        MyGUI::IntCoord(14, 298, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
     g_damageLeftArmButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 328, 156, 28),
+        MyGUI::IntCoord(20, 320, 156, 28),
         MyGUI::Align::Default);
     g_damageRightArmButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(184, 328, 156, 28),
+        MyGUI::IntCoord(184, 320, 156, 28),
         MyGUI::Align::Default);
     g_damageLeftLegButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 362, 156, 28),
+        MyGUI::IntCoord(20, 354, 156, 28),
         MyGUI::Align::Default);
     g_damageRightLegButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(184, 362, 156, 28),
+        MyGUI::IntCoord(184, 354, 156, 28),
         MyGUI::Align::Default);
     g_teleportSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 402, kPanelWidth - 28, 18),
+        MyGUI::IntCoord(14, 208, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
     g_teleportSelectedToCameraButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 424, kPanelWidth - 40, 28),
+        MyGUI::IntCoord(20, 230, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_dangerousSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 458, kPanelWidth - 28, 18),
+        MyGUI::IntCoord(14, 394, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
     g_forceDyingButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 480, kPanelWidth - 40, 28),
+        MyGUI::IntCoord(20, 416, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_statusText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
