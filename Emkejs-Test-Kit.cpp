@@ -1,5 +1,7 @@
 #include <Debug.h>
 
+#include <emc/mod_hub_client.h>
+
 #include <core/Functions.h>
 #include <kenshi/Character.h>
 #include <kenshi/Damages.h>
@@ -22,9 +24,11 @@
 #include <mygui/MyGUI_EditBox.h>
 #include <mygui/MyGUI_Gui.h>
 #include <mygui/MyGUI_InputManager.h>
+#include <mygui/MyGUI_ListBox.h>
 #include <mygui/MyGUI_RenderManager.h>
 #include <mygui/MyGUI_TextBox.h>
 #include <mygui/MyGUI_Widget.h>
+#include <ois/OISKeyboard.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -45,7 +49,7 @@ const char* kDefaultTogglePanelKey = "D";
 const int kPanelLeft = 18;
 const int kPanelTop = 140;
 const int kPanelWidth = 360;
-const int kPanelExpandedHeight = 640;
+const int kPanelExpandedHeight = 708;
 const int kPanelCollapsedHeight = 42;
 const int kPanelViewportPadding = 16;
 const int kPanelDragThreshold = 3;
@@ -59,17 +63,106 @@ const float kMinimumLimbDamageAmount = 5.0f;
 const char* kTeleportDestinationLabel = "Test Spot";
 const Ogre::Vector3 kTeleportDestinationCenter(-56164.4f, 1605.11f, 20653.6f);
 const float kFloatChangeEpsilon = 0.001f;
-const int kInventoryItemDropdownMaxListLength = 10;
-const char* const kInventorySpawnExtraItemKeywords[] = {
+// MyGUI expects the popup length as a visual height, not an item count.
+const int kInventoryItemDropdownMaxListLength = 224;
+const char* kModHubNamespaceId = "emkej.qol";
+const char* kModHubNamespaceDisplayName = "Emkej QoL";
+const char* kModHubModId = "emkejs_test_kit";
+const char* kModHubModDisplayName = "Emkejs Test Kit";
+const char* kModHubTogglePanelKeyLabel = "Debug Panel Key";
+const char* kModHubTogglePanelKeyDescription =
+    "Primary key for showing or hiding the debug panel. Use the modifier toggles below for Ctrl, Shift, and Alt. Unbind to disable.";
+const char* kModHubTogglePanelCtrlLabel = "Require Ctrl";
+const char* kModHubTogglePanelCtrlDescription = "Require Ctrl for the debug panel hotkey.";
+const char* kModHubTogglePanelShiftLabel = "Require Shift";
+const char* kModHubTogglePanelShiftDescription = "Require Shift for the debug panel hotkey.";
+const char* kModHubTogglePanelAltLabel = "Require Alt";
+const char* kModHubTogglePanelAltDescription = "Require Alt for the debug panel hotkey.";
+const char* const kInventorySpawnGeneralKeywords[] = {
     "BUILDING MATERIAL",
     "IRON PLATE",
     "IRON ORE",
+    "RAW IRON",
     "COPPER",
-    "CHAINMAIL",
-    "HACKSAW",
     "ELECTRICAL COMPONENT",
     "FABRIC",
-    "STEEL BAR"
+    "FABRICS",
+    "STEEL BAR",
+    "HACKSAW",
+    "LOCKPICK",
+    "REPAIR KIT",
+    "FIRST AID",
+    "MEDKIT",
+    "SPLINT",
+    "SLEEPING BAG",
+    "LANTERN",
+    "TORCH",
+    "LUXURY GOODS",
+    "BLUEPRINT",
+    "MAP",
+    "BOOK"
+};
+const char* const kInventorySpawnArmourKeywords[] = {
+    "CHAINMAIL",
+    "CHAIN SHIRT",
+    "CHAINSHIRT",
+    "ARMOUR",
+    "ARMOR",
+    "BODY ARMOUR",
+    "BODY ARMOR",
+    "CLOTHING",
+    "HELMET",
+    "MASK",
+    "HOOD",
+    "HAT",
+    "BOOTS",
+    "SANDALS",
+    "SHIRT",
+    "VEST",
+    "TURTLENECK",
+    "PANTS",
+    "TROUSERS",
+    "SKIRT",
+    "JACKET",
+    "COAT",
+    "ROBE",
+    "LONGCOAT",
+    "DUSTCOAT",
+    "RAGS"
+};
+const char* const kInventorySpawnWeaponKeywords[] = {
+    "WEAPON",
+    "KATANA",
+    "SABRE",
+    "SCIMITAR",
+    "NODACHI",
+    "WAKIZASHI",
+    "JITTE",
+    "POLEARM",
+    "NAGINATA",
+    "HAMMER",
+    "AXE",
+    "CLUB",
+    "CHOPPER",
+    "HACKER",
+    "TOPPER",
+    "BLADE",
+    "SCYTHE",
+    "MAUL",
+    "MACE",
+    "CROSSBOW",
+    "BOW",
+    "STAFF",
+    "PLANK",
+    "CLEAVER",
+    "SWORD",
+    "PALADIN"
+};
+const char* const kInventorySpawnToolKeywords[] = {
+    "HACKSAW",
+    "LOCKPICK",
+    "REPAIR KIT",
+    "TOOL"
 };
 
 enum LoggingLevel
@@ -91,6 +184,15 @@ enum PanelTab
     PanelTab_Health = 0,
     PanelTab_Teleport = 1,
     PanelTab_Inventory = 2
+};
+
+enum InventorySpawnCategory
+{
+    InventorySpawnCategory_All = 0,
+    InventorySpawnCategory_Food = 1,
+    InventorySpawnCategory_General = 2,
+    InventorySpawnCategory_Armour = 3,
+    InventorySpawnCategory_Weapons = 4
 };
 
 struct TargetSnapshot
@@ -127,6 +229,8 @@ bool g_hotkeyEnabled = true;
 int g_hotkeyVirtualKey = 'D';
 std::string g_hotkeyDisplay = "CTRL+SHIFT+D";
 bool g_hotkeyPrevDown = false;
+emc::ModHubClient g_modHubClient;
+bool g_modHubClientConfigured = false;
 bool g_confirmDangerousActions = true;
 bool g_panelHidden = false;
 bool g_panelCollapsed = false;
@@ -179,11 +283,11 @@ MyGUI::TextBox* g_moneyAmountLabelText = 0;
 MyGUI::EditBox* g_moneyAmountEdit = 0;
 MyGUI::Button* g_addMoneyButton = 0;
 MyGUI::TextBox* g_spawnFoodSectionText = 0;
+MyGUI::TextBox* g_itemCategoryLabelText = 0;
+MyGUI::ComboBox* g_itemCategoryDropdown = 0;
 MyGUI::TextBox* g_itemSearchLabelText = 0;
 MyGUI::EditBox* g_itemSearchEdit = 0;
-MyGUI::Button* g_itemSuggestionButton1 = 0;
-MyGUI::Button* g_itemSuggestionButton2 = 0;
-MyGUI::Button* g_itemSuggestionButton3 = 0;
+MyGUI::ListBox* g_itemSearchResultsList = 0;
 MyGUI::TextBox* g_itemDropdownLabelText = 0;
 MyGUI::ComboBox* g_itemDropdown = 0;
 MyGUI::TextBox* g_itemQuantityLabelText = 0;
@@ -196,9 +300,6 @@ MyGUI::TextBox* g_statusText = 0;
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
 bool g_inventoryFoodItemOptionsLoaded = false;
-size_t g_itemSuggestionOptionIndex1 = MyGUI::ITEM_NONE;
-size_t g_itemSuggestionOptionIndex2 = MyGUI::ITEM_NONE;
-size_t g_itemSuggestionOptionIndex3 = MyGUI::ITEM_NONE;
 
 void (*PlayerInterface_updateUT_orig)(PlayerInterface*) = 0;
 void (*SaveManager_loadByInfo_orig)(SaveManager*, const SaveInfo&, bool) = 0;
@@ -369,32 +470,320 @@ std::string BuildInventorySpawnOptionSearchText(GameData* itemData, const std::s
         searchTextUpper += ToUpperAscii(stringId);
     }
 
+    switch (itemData->type)
+    {
+    case WEAPON:
+        searchTextUpper += " WEAPON";
+        break;
+    case CROSSBOW:
+        searchTextUpper += " CROSSBOW WEAPON";
+        break;
+    case ARMOUR:
+        searchTextUpper += " ARMOUR ARMOR";
+        break;
+    default:
+        break;
+    }
+
+    for (boost::unordered::unordered_map<std::string, std::string>::const_iterator it = itemData->sdata.begin();
+         it != itemData->sdata.end();
+         ++it)
+    {
+        if (!it->first.empty())
+        {
+            searchTextUpper += " ";
+            searchTextUpper += ToUpperAscii(it->first);
+        }
+        if (!it->second.empty())
+        {
+            searchTextUpper += " ";
+            searchTextUpper += ToUpperAscii(it->second);
+        }
+    }
+
+    for (boost::unordered::unordered_map<std::string, std::string>::const_iterator it = itemData->filesdata.begin();
+         it != itemData->filesdata.end();
+         ++it)
+    {
+        if (!it->first.empty())
+        {
+            searchTextUpper += " ";
+            searchTextUpper += ToUpperAscii(it->first);
+        }
+        if (!it->second.empty())
+        {
+            searchTextUpper += " ";
+            searchTextUpper += ToUpperAscii(it->second);
+        }
+    }
+
     return searchTextUpper;
 }
 
-bool IsAllowedInventorySpawnItem(GameData* itemData, const std::string& searchTextUpper)
+bool IsInventorySpawnWeaponDataType(const GameData* itemData)
 {
-    if (!itemData || !itemData->isValid())
+    return itemData && (itemData->type == WEAPON || itemData->type == CROSSBOW);
+}
+
+bool IsInventorySpawnArmourDataType(const GameData* itemData)
+{
+    return itemData && itemData->type == ARMOUR;
+}
+
+std::string NormalizeGameDataKey(const std::string& value)
+{
+    std::string normalized;
+    normalized.reserve(value.size());
+
+    for (size_t index = 0; index < value.size(); ++index)
     {
-        return false;
+        const unsigned char ch = static_cast<unsigned char>(value[index]);
+        if (std::isalnum(ch) == 0)
+        {
+            continue;
+        }
+
+        normalized.push_back(static_cast<char>(std::tolower(ch)));
     }
 
-    if (Item::isFood(itemData))
-    {
-        return true;
-    }
+    return normalized;
+}
 
-    for (size_t index = 0;
-         index < sizeof(kInventorySpawnExtraItemKeywords) / sizeof(kInventorySpawnExtraItemKeywords[0]);
-         ++index)
+bool DoesSearchTextContainAnyKeyword(
+    const std::string& searchTextUpper,
+    const char* const* keywords,
+    size_t keywordCount)
+{
+    for (size_t index = 0; index < keywordCount; ++index)
     {
-        if (searchTextUpper.find(kInventorySpawnExtraItemKeywords[index]) != std::string::npos)
+        if (searchTextUpper.find(keywords[index]) != std::string::npos)
         {
             return true;
         }
     }
 
     return false;
+}
+
+bool TryGetGameDataIntValue(const GameData* itemData, const char* key, int* outValue)
+{
+    if (!itemData || !key || !outValue)
+    {
+        return false;
+    }
+
+    boost::unordered::unordered_map<std::string, int>::const_iterator it = itemData->idata.find(key);
+    if (it == itemData->idata.end())
+    {
+        return false;
+    }
+
+    *outValue = it->second;
+    return true;
+}
+
+bool TryGetGameDataIntValueByNormalizedKeys(
+    const GameData* itemData,
+    const char* const* normalizedKeys,
+    size_t normalizedKeyCount,
+    int* outValue)
+{
+    if (!itemData || !normalizedKeys || normalizedKeyCount == 0 || !outValue)
+    {
+        return false;
+    }
+
+    for (boost::unordered::unordered_map<std::string, int>::const_iterator it = itemData->idata.begin();
+         it != itemData->idata.end();
+         ++it)
+    {
+        const std::string normalizedKey = NormalizeGameDataKey(it->first);
+        if (normalizedKey.empty())
+        {
+            continue;
+        }
+
+        for (size_t keyIndex = 0; keyIndex < normalizedKeyCount; ++keyIndex)
+        {
+            if (normalizedKey == normalizedKeys[keyIndex])
+            {
+                *outValue = it->second;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool TryGetInventorySpawnItemFunction(const GameData* itemData, ItemFunction* outItemFunction)
+{
+    if (!itemData || !outItemFunction)
+    {
+        return false;
+    }
+
+    static const char* const kItemFunctionNormalizedKeys[] = {
+        "itemfunction"
+    };
+
+    int value = 0;
+    if (!TryGetGameDataIntValueByNormalizedKeys(
+            itemData,
+            kItemFunctionNormalizedKeys,
+            sizeof(kItemFunctionNormalizedKeys) / sizeof(kItemFunctionNormalizedKeys[0]),
+            &value))
+    {
+        return false;
+    }
+
+    if (value < ITEM_NO_FUNCTION || value > ITEM_SEVERED_LIMB)
+    {
+        return false;
+    }
+
+    *outItemFunction = static_cast<ItemFunction>(value);
+    return true;
+}
+
+bool TryGetInventorySpawnArmourType(const GameData* itemData, int* outArmourType)
+{
+    static const char* const kArmourTypeNormalizedKeys[] = {
+        "armourtype",
+        "armortype"
+    };
+
+    return TryGetGameDataIntValueByNormalizedKeys(
+        itemData,
+        kArmourTypeNormalizedKeys,
+        sizeof(kArmourTypeNormalizedKeys) / sizeof(kArmourTypeNormalizedKeys[0]),
+        outArmourType);
+}
+
+bool IsInventorySpawnToolItem(const GameData* itemData, const std::string& searchTextUpper);
+
+bool IsInventorySpawnGeneralItem(const GameData* itemData, const std::string& searchTextUpper)
+{
+    if (!itemData || IsInventorySpawnWeaponDataType(itemData) || IsInventorySpawnArmourDataType(itemData))
+    {
+        return false;
+    }
+
+    if (IsInventorySpawnToolItem(itemData, searchTextUpper))
+    {
+        return true;
+    }
+
+    return DoesSearchTextContainAnyKeyword(
+        searchTextUpper,
+        kInventorySpawnGeneralKeywords,
+        sizeof(kInventorySpawnGeneralKeywords) / sizeof(kInventorySpawnGeneralKeywords[0]));
+}
+
+bool IsInventorySpawnArmourItem(const GameData* itemData, const std::string& searchTextUpper)
+{
+    if (IsInventorySpawnArmourDataType(itemData))
+    {
+        return true;
+    }
+
+    ItemFunction itemFunction = ITEM_NO_FUNCTION;
+    if (TryGetInventorySpawnItemFunction(itemData, &itemFunction) && itemFunction == ITEM_CLOTHING)
+    {
+        return true;
+    }
+
+    int armourType = 0;
+    if (TryGetInventorySpawnArmourType(itemData, &armourType))
+    {
+        return true;
+    }
+
+    return DoesSearchTextContainAnyKeyword(
+        searchTextUpper,
+        kInventorySpawnArmourKeywords,
+        sizeof(kInventorySpawnArmourKeywords) / sizeof(kInventorySpawnArmourKeywords[0]));
+}
+
+bool IsInventorySpawnWeaponItem(const GameData* itemData, const std::string& searchTextUpper)
+{
+    if (IsInventorySpawnWeaponDataType(itemData))
+    {
+        return true;
+    }
+
+    ItemFunction itemFunction = ITEM_NO_FUNCTION;
+    if (TryGetInventorySpawnItemFunction(itemData, &itemFunction) && itemFunction == ITEM_WEAPON)
+    {
+        return true;
+    }
+
+    return DoesSearchTextContainAnyKeyword(
+        searchTextUpper,
+        kInventorySpawnWeaponKeywords,
+        sizeof(kInventorySpawnWeaponKeywords) / sizeof(kInventorySpawnWeaponKeywords[0]));
+}
+
+bool IsInventorySpawnToolItem(const GameData* itemData, const std::string& searchTextUpper)
+{
+    ItemFunction itemFunction = ITEM_NO_FUNCTION;
+    if (TryGetInventorySpawnItemFunction(itemData, &itemFunction) && itemFunction == ITEM_TOOL)
+    {
+        return true;
+    }
+
+    return DoesSearchTextContainAnyKeyword(
+        searchTextUpper,
+        kInventorySpawnToolKeywords,
+        sizeof(kInventorySpawnToolKeywords) / sizeof(kInventorySpawnToolKeywords[0]));
+}
+
+bool DoesInventorySpawnItemMatchCategory(
+    const GameData* itemData,
+    const std::string& searchTextUpper,
+    InventorySpawnCategory category)
+{
+    const bool isFood = Item::isFood(const_cast<GameData*>(itemData));
+    const bool isGeneral = IsInventorySpawnGeneralItem(itemData, searchTextUpper);
+    const bool isArmour = IsInventorySpawnArmourItem(itemData, searchTextUpper);
+    const bool isWeapon = IsInventorySpawnWeaponItem(itemData, searchTextUpper);
+
+    switch (category)
+    {
+    case InventorySpawnCategory_Food:
+        return isFood;
+    case InventorySpawnCategory_General:
+        return isGeneral;
+    case InventorySpawnCategory_Armour:
+        return isArmour;
+    case InventorySpawnCategory_Weapons:
+        return isWeapon;
+    case InventorySpawnCategory_All:
+    default:
+        return isFood || isGeneral || isArmour || isWeapon;
+    }
+}
+
+InventorySpawnCategory GetSelectedInventorySpawnCategory()
+{
+    if (!g_itemCategoryDropdown)
+    {
+        return InventorySpawnCategory_All;
+    }
+
+    switch (g_itemCategoryDropdown->getIndexSelected())
+    {
+    case 1:
+        return InventorySpawnCategory_Food;
+    case 2:
+        return InventorySpawnCategory_General;
+    case 3:
+        return InventorySpawnCategory_Armour;
+    case 4:
+        return InventorySpawnCategory_Weapons;
+    default:
+        return InventorySpawnCategory_All;
+    }
 }
 
 bool DoesInventorySpawnOptionMatchSearch(const InventorySpawnOption& option, const std::string& searchUpper)
@@ -404,58 +793,6 @@ bool DoesInventorySpawnOptionMatchSearch(const InventorySpawnOption& option, con
 
 void EnsureInventoryFoodItemOptionsLoaded();
 void RefreshInventoryFoodItemDropdown();
-
-void SetInventoryFoodSuggestionButton(
-    MyGUI::Button* button,
-    size_t* optionIndexState,
-    size_t optionIndex)
-{
-    if (optionIndexState)
-    {
-        *optionIndexState = optionIndex;
-    }
-
-    if (!button)
-    {
-        return;
-    }
-
-    if (optionIndex == MyGUI::ITEM_NONE || optionIndex >= g_inventoryFoodItemOptions.size())
-    {
-        button->setCaption("");
-        button->setEnabled(false);
-        return;
-    }
-
-    button->setCaption(g_inventoryFoodItemOptions[optionIndex].displayName);
-    button->setEnabled(true);
-}
-
-void RefreshInventoryFoodSuggestionButtons(const std::string& searchUpper)
-{
-    const bool showSuggestions = !searchUpper.empty() && g_filteredInventoryFoodItemOptionIndexes.size() > 1;
-    const size_t suggestionCount = showSuggestions
-        ? std::min<size_t>(3, g_filteredInventoryFoodItemOptionIndexes.size())
-        : 0;
-
-    MyGUI::Button* buttons[3] = {
-        g_itemSuggestionButton1,
-        g_itemSuggestionButton2,
-        g_itemSuggestionButton3
-    };
-    size_t* optionIndexStates[3] = {
-        &g_itemSuggestionOptionIndex1,
-        &g_itemSuggestionOptionIndex2,
-        &g_itemSuggestionOptionIndex3
-    };
-
-    for (size_t index = 0; index < 3; ++index)
-    {
-        const size_t optionIndex =
-            index < suggestionCount ? g_filteredInventoryFoodItemOptionIndexes[index] : MyGUI::ITEM_NONE;
-        SetInventoryFoodSuggestionButton(buttons[index], optionIndexStates[index], optionIndex);
-    }
-}
 
 bool TryPopulateInventoryFoodSelection(size_t optionIndex)
 {
@@ -485,6 +822,11 @@ bool TryPopulateInventoryFoodSelection(size_t optionIndex)
         }
 
         g_itemDropdown->setIndexSelected(filteredIndex);
+        if (g_itemSearchResultsList)
+        {
+            g_itemSearchResultsList->setIndexSelected(filteredIndex);
+            g_itemSearchResultsList->beginToItemSelected();
+        }
         return true;
     }
 
@@ -593,6 +935,58 @@ bool TryReadTextFile(const std::string& path, std::string* outContent)
     return true;
 }
 
+bool TryWriteTextFile(const std::string& path, const std::string& content)
+{
+    std::ofstream output(path.c_str(), std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!output)
+    {
+        return false;
+    }
+
+    output.write(content.data(), static_cast<std::streamsize>(content.size()));
+    if (!output.good())
+    {
+        return false;
+    }
+
+    output.close();
+    return output.good();
+}
+
+std::string EscapeJsonStringValue(const std::string& value)
+{
+    std::string escaped;
+    escaped.reserve(value.size() + 8);
+
+    for (size_t index = 0; index < value.size(); ++index)
+    {
+        const char current = value[index];
+        switch (current)
+        {
+        case '\\':
+            escaped += "\\\\";
+            break;
+        case '"':
+            escaped += "\\\"";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            escaped.push_back(current);
+            break;
+        }
+    }
+
+    return escaped;
+}
+
 bool TryParseJsonBoolByKey(const std::string& content, const char* key, bool* outValue)
 {
     if (!key || !outValue)
@@ -633,6 +1027,102 @@ bool TryParseJsonBoolByKey(const std::string& content, const char* key, bool* ou
     }
 
     return false;
+}
+
+bool TryReplaceJsonBoolByKey(std::string* content, const char* key, bool value)
+{
+    if (!content || !key)
+    {
+        return false;
+    }
+
+    const std::string needle = std::string("\"") + key + "\"";
+    const std::string::size_type keyPos = content->find(needle);
+    if (keyPos == std::string::npos)
+    {
+        return false;
+    }
+
+    std::string::size_type valuePos = content->find(':', keyPos + needle.size());
+    if (valuePos == std::string::npos)
+    {
+        return false;
+    }
+
+    ++valuePos;
+    while (valuePos < content->size()
+        && std::isspace(static_cast<unsigned char>((*content)[valuePos])) != 0)
+    {
+        ++valuePos;
+    }
+
+    std::string replacement = value ? "true" : "false";
+    if (content->compare(valuePos, 4, "true") == 0)
+    {
+        content->replace(valuePos, 4, replacement);
+        return true;
+    }
+
+    if (content->compare(valuePos, 5, "false") == 0)
+    {
+        content->replace(valuePos, 5, replacement);
+        return true;
+    }
+
+    return false;
+}
+
+bool TryReplaceJsonStringByKey(std::string* content, const char* key, const std::string& value)
+{
+    if (!content || !key)
+    {
+        return false;
+    }
+
+    const std::string needle = std::string("\"") + key + "\"";
+    const std::string::size_type keyPos = content->find(needle);
+    if (keyPos == std::string::npos)
+    {
+        return false;
+    }
+
+    std::string::size_type valuePos = content->find(':', keyPos + needle.size());
+    if (valuePos == std::string::npos)
+    {
+        return false;
+    }
+
+    ++valuePos;
+    while (valuePos < content->size()
+        && std::isspace(static_cast<unsigned char>((*content)[valuePos])) != 0)
+    {
+        ++valuePos;
+    }
+
+    if (valuePos >= content->size() || (*content)[valuePos] != '"')
+    {
+        return false;
+    }
+
+    std::string::size_type endPos = valuePos + 1;
+    while (endPos < content->size())
+    {
+        if ((*content)[endPos] == '"' && (*content)[endPos - 1] != '\\')
+        {
+            break;
+        }
+
+        ++endPos;
+    }
+
+    if (endPos >= content->size())
+    {
+        return false;
+    }
+
+    const std::string replacement = std::string("\"") + EscapeJsonStringValue(value) + "\"";
+    content->replace(valuePos, endPos - valuePos + 1, replacement);
+    return true;
 }
 
 bool TryParseJsonStringByKey(const std::string& content, const char* key, std::string* outValue)
@@ -694,6 +1184,24 @@ bool TryParseJsonStringByKey(const std::string& content, const char* key, std::s
     }
 
     return false;
+}
+
+void CopyModHubErrorMessage(char* err_buf, uint32_t err_buf_size, const char* message)
+{
+    if (!err_buf || err_buf_size == 0u)
+    {
+        return;
+    }
+
+    err_buf[0] = '\0';
+    if (!message)
+    {
+        return;
+    }
+
+    const size_t maxCopyLength = static_cast<size_t>(err_buf_size - 1u);
+    std::strncpy(err_buf, message, maxCopyLength);
+    err_buf[maxCopyLength] = '\0';
 }
 
 bool TryParsePrimaryKeyToken(const std::string& tokenValue, int* virtualKeyOut, std::string* canonicalTokenOut)
@@ -853,6 +1361,315 @@ bool TryParsePrimaryKeyToken(const std::string& tokenValue, int* virtualKeyOut, 
     return false;
 }
 
+bool TryMapTogglePanelTokenToOisKeycode(const std::string& tokenValue, int32_t* outKeycode)
+{
+    if (!outKeycode)
+    {
+        return false;
+    }
+
+    const std::string tokenUpper = ToUpperAscii(TrimAscii(tokenValue));
+    if (tokenUpper == "NONE" || tokenUpper == "UNBOUND")
+    {
+        *outKeycode = EMC_KEY_UNBOUND;
+        return true;
+    }
+
+    int virtualKey = 0;
+    std::string canonicalToken;
+    if (!TryParsePrimaryKeyToken(tokenValue, &virtualKey, &canonicalToken))
+    {
+        return false;
+    }
+
+    if (canonicalToken.size() == 1)
+    {
+        switch (canonicalToken[0])
+        {
+        case '0': *outKeycode = OIS::KC_0; return true;
+        case '1': *outKeycode = OIS::KC_1; return true;
+        case '2': *outKeycode = OIS::KC_2; return true;
+        case '3': *outKeycode = OIS::KC_3; return true;
+        case '4': *outKeycode = OIS::KC_4; return true;
+        case '5': *outKeycode = OIS::KC_5; return true;
+        case '6': *outKeycode = OIS::KC_6; return true;
+        case '7': *outKeycode = OIS::KC_7; return true;
+        case '8': *outKeycode = OIS::KC_8; return true;
+        case '9': *outKeycode = OIS::KC_9; return true;
+        case 'A': *outKeycode = OIS::KC_A; return true;
+        case 'B': *outKeycode = OIS::KC_B; return true;
+        case 'C': *outKeycode = OIS::KC_C; return true;
+        case 'D': *outKeycode = OIS::KC_D; return true;
+        case 'E': *outKeycode = OIS::KC_E; return true;
+        case 'F': *outKeycode = OIS::KC_F; return true;
+        case 'G': *outKeycode = OIS::KC_G; return true;
+        case 'H': *outKeycode = OIS::KC_H; return true;
+        case 'I': *outKeycode = OIS::KC_I; return true;
+        case 'J': *outKeycode = OIS::KC_J; return true;
+        case 'K': *outKeycode = OIS::KC_K; return true;
+        case 'L': *outKeycode = OIS::KC_L; return true;
+        case 'M': *outKeycode = OIS::KC_M; return true;
+        case 'N': *outKeycode = OIS::KC_N; return true;
+        case 'O': *outKeycode = OIS::KC_O; return true;
+        case 'P': *outKeycode = OIS::KC_P; return true;
+        case 'Q': *outKeycode = OIS::KC_Q; return true;
+        case 'R': *outKeycode = OIS::KC_R; return true;
+        case 'S': *outKeycode = OIS::KC_S; return true;
+        case 'T': *outKeycode = OIS::KC_T; return true;
+        case 'U': *outKeycode = OIS::KC_U; return true;
+        case 'V': *outKeycode = OIS::KC_V; return true;
+        case 'W': *outKeycode = OIS::KC_W; return true;
+        case 'X': *outKeycode = OIS::KC_X; return true;
+        case 'Y': *outKeycode = OIS::KC_Y; return true;
+        case 'Z': *outKeycode = OIS::KC_Z; return true;
+        default:
+            return false;
+        }
+    }
+
+    if (canonicalToken.size() >= 2 && canonicalToken[0] == 'F')
+    {
+        const int functionIndex = std::atoi(canonicalToken.c_str() + 1);
+        switch (functionIndex)
+        {
+        case 1: *outKeycode = OIS::KC_F1; return true;
+        case 2: *outKeycode = OIS::KC_F2; return true;
+        case 3: *outKeycode = OIS::KC_F3; return true;
+        case 4: *outKeycode = OIS::KC_F4; return true;
+        case 5: *outKeycode = OIS::KC_F5; return true;
+        case 6: *outKeycode = OIS::KC_F6; return true;
+        case 7: *outKeycode = OIS::KC_F7; return true;
+        case 8: *outKeycode = OIS::KC_F8; return true;
+        case 9: *outKeycode = OIS::KC_F9; return true;
+        case 10: *outKeycode = OIS::KC_F10; return true;
+        case 11: *outKeycode = OIS::KC_F11; return true;
+        case 12: *outKeycode = OIS::KC_F12; return true;
+        case 13: *outKeycode = OIS::KC_F13; return true;
+        case 14: *outKeycode = OIS::KC_F14; return true;
+        case 15: *outKeycode = OIS::KC_F15; return true;
+        default:
+            return false;
+        }
+    }
+
+    if (canonicalToken == "SPACE")
+    {
+        *outKeycode = OIS::KC_SPACE;
+        return true;
+    }
+    if (canonicalToken == "TAB")
+    {
+        *outKeycode = OIS::KC_TAB;
+        return true;
+    }
+    if (canonicalToken == "ENTER")
+    {
+        *outKeycode = OIS::KC_RETURN;
+        return true;
+    }
+    if (canonicalToken == "ESC")
+    {
+        *outKeycode = OIS::KC_ESCAPE;
+        return true;
+    }
+    if (canonicalToken == "BACKSPACE")
+    {
+        *outKeycode = OIS::KC_BACK;
+        return true;
+    }
+    if (canonicalToken == "DELETE")
+    {
+        *outKeycode = OIS::KC_DELETE;
+        return true;
+    }
+    if (canonicalToken == "INSERT")
+    {
+        *outKeycode = OIS::KC_INSERT;
+        return true;
+    }
+    if (canonicalToken == "HOME")
+    {
+        *outKeycode = OIS::KC_HOME;
+        return true;
+    }
+    if (canonicalToken == "END")
+    {
+        *outKeycode = OIS::KC_END;
+        return true;
+    }
+    if (canonicalToken == "PAGEUP")
+    {
+        *outKeycode = OIS::KC_PGUP;
+        return true;
+    }
+    if (canonicalToken == "PAGEDOWN")
+    {
+        *outKeycode = OIS::KC_PGDOWN;
+        return true;
+    }
+    if (canonicalToken == "UP")
+    {
+        *outKeycode = OIS::KC_UP;
+        return true;
+    }
+    if (canonicalToken == "DOWN")
+    {
+        *outKeycode = OIS::KC_DOWN;
+        return true;
+    }
+    if (canonicalToken == "LEFT")
+    {
+        *outKeycode = OIS::KC_LEFT;
+        return true;
+    }
+    if (canonicalToken == "RIGHT")
+    {
+        *outKeycode = OIS::KC_RIGHT;
+        return true;
+    }
+
+    return false;
+}
+
+bool TryMapOisKeycodeToTogglePanelToken(int32_t keycode, std::string* outToken)
+{
+    if (!outToken)
+    {
+        return false;
+    }
+
+    outToken->clear();
+
+    if (keycode == EMC_KEY_UNBOUND)
+    {
+        *outToken = "NONE";
+        return true;
+    }
+
+    switch (keycode)
+    {
+    case OIS::KC_0: *outToken = "0"; return true;
+    case OIS::KC_1: *outToken = "1"; return true;
+    case OIS::KC_2: *outToken = "2"; return true;
+    case OIS::KC_3: *outToken = "3"; return true;
+    case OIS::KC_4: *outToken = "4"; return true;
+    case OIS::KC_5: *outToken = "5"; return true;
+    case OIS::KC_6: *outToken = "6"; return true;
+    case OIS::KC_7: *outToken = "7"; return true;
+    case OIS::KC_8: *outToken = "8"; return true;
+    case OIS::KC_9: *outToken = "9"; return true;
+    case OIS::KC_A: *outToken = "A"; return true;
+    case OIS::KC_B: *outToken = "B"; return true;
+    case OIS::KC_C: *outToken = "C"; return true;
+    case OIS::KC_D: *outToken = "D"; return true;
+    case OIS::KC_E: *outToken = "E"; return true;
+    case OIS::KC_F: *outToken = "F"; return true;
+    case OIS::KC_G: *outToken = "G"; return true;
+    case OIS::KC_H: *outToken = "H"; return true;
+    case OIS::KC_I: *outToken = "I"; return true;
+    case OIS::KC_J: *outToken = "J"; return true;
+    case OIS::KC_K: *outToken = "K"; return true;
+    case OIS::KC_L: *outToken = "L"; return true;
+    case OIS::KC_M: *outToken = "M"; return true;
+    case OIS::KC_N: *outToken = "N"; return true;
+    case OIS::KC_O: *outToken = "O"; return true;
+    case OIS::KC_P: *outToken = "P"; return true;
+    case OIS::KC_Q: *outToken = "Q"; return true;
+    case OIS::KC_R: *outToken = "R"; return true;
+    case OIS::KC_S: *outToken = "S"; return true;
+    case OIS::KC_T: *outToken = "T"; return true;
+    case OIS::KC_U: *outToken = "U"; return true;
+    case OIS::KC_V: *outToken = "V"; return true;
+    case OIS::KC_W: *outToken = "W"; return true;
+    case OIS::KC_X: *outToken = "X"; return true;
+    case OIS::KC_Y: *outToken = "Y"; return true;
+    case OIS::KC_Z: *outToken = "Z"; return true;
+    case OIS::KC_F1: *outToken = "F1"; return true;
+    case OIS::KC_F2: *outToken = "F2"; return true;
+    case OIS::KC_F3: *outToken = "F3"; return true;
+    case OIS::KC_F4: *outToken = "F4"; return true;
+    case OIS::KC_F5: *outToken = "F5"; return true;
+    case OIS::KC_F6: *outToken = "F6"; return true;
+    case OIS::KC_F7: *outToken = "F7"; return true;
+    case OIS::KC_F8: *outToken = "F8"; return true;
+    case OIS::KC_F9: *outToken = "F9"; return true;
+    case OIS::KC_F10: *outToken = "F10"; return true;
+    case OIS::KC_F11: *outToken = "F11"; return true;
+    case OIS::KC_F12: *outToken = "F12"; return true;
+    case OIS::KC_F13: *outToken = "F13"; return true;
+    case OIS::KC_F14: *outToken = "F14"; return true;
+    case OIS::KC_F15: *outToken = "F15"; return true;
+    case OIS::KC_SPACE: *outToken = "SPACE"; return true;
+    case OIS::KC_TAB: *outToken = "TAB"; return true;
+    case OIS::KC_RETURN: *outToken = "ENTER"; return true;
+    case OIS::KC_ESCAPE: *outToken = "ESC"; return true;
+    case OIS::KC_BACK: *outToken = "BACKSPACE"; return true;
+    case OIS::KC_DELETE: *outToken = "DELETE"; return true;
+    case OIS::KC_INSERT: *outToken = "INSERT"; return true;
+    case OIS::KC_HOME: *outToken = "HOME"; return true;
+    case OIS::KC_END: *outToken = "END"; return true;
+    case OIS::KC_PGUP: *outToken = "PAGEUP"; return true;
+    case OIS::KC_PGDOWN: *outToken = "PAGEDOWN"; return true;
+    case OIS::KC_UP: *outToken = "UP"; return true;
+    case OIS::KC_DOWN: *outToken = "DOWN"; return true;
+    case OIS::KC_LEFT: *outToken = "LEFT"; return true;
+    case OIS::KC_RIGHT: *outToken = "RIGHT"; return true;
+    default:
+        return false;
+    }
+}
+
+bool TrySaveTogglePanelHotkeyConfig(const char** outError)
+{
+    if (outError)
+    {
+        *outError = "";
+    }
+
+    std::string configPath;
+    if (!TryResolveModConfigPath(&configPath))
+    {
+        if (outError)
+        {
+            *outError = "config_path_unavailable";
+        }
+        return false;
+    }
+
+    std::string configText;
+    if (!TryReadTextFile(configPath, &configText))
+    {
+        if (outError)
+        {
+            *outError = "config_read_failed";
+        }
+        return false;
+    }
+
+    if (!TryReplaceJsonStringByKey(&configText, "toggle_panel_key", g_togglePanelKey)
+        || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_ctrl", g_togglePanelRequireCtrl)
+        || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_shift", g_togglePanelRequireShift)
+        || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_alt", g_togglePanelRequireAlt))
+    {
+        if (outError)
+        {
+            *outError = "config_key_missing";
+        }
+        return false;
+    }
+
+    if (!TryWriteTextFile(configPath, configText))
+    {
+        if (outError)
+        {
+            *outError = "config_write_failed";
+        }
+        return false;
+    }
+
+    return true;
+}
+
 void RefreshStatusWidget()
 {
     if (!g_statusText)
@@ -910,11 +1727,14 @@ void RefreshInventoryFoodItemDropdown()
     if (!g_itemDropdown)
     {
         g_filteredInventoryFoodItemOptionIndexes.clear();
-        RefreshInventoryFoodSuggestionButtons("");
         return;
     }
 
     g_itemDropdown->removeAllItems();
+    if (g_itemSearchResultsList)
+    {
+        g_itemSearchResultsList->removeAllItems();
+    }
     g_filteredInventoryFoodItemOptionIndexes.clear();
 
     std::string searchUpper;
@@ -922,10 +1742,15 @@ void RefreshInventoryFoodItemDropdown()
     {
         searchUpper = ToUpperAscii(TrimAscii(g_itemSearchEdit->getOnlyText().asUTF8()));
     }
+    const InventorySpawnCategory category = GetSelectedInventorySpawnCategory();
 
     for (size_t index = 0; index < g_inventoryFoodItemOptions.size(); ++index)
     {
         const InventorySpawnOption& option = g_inventoryFoodItemOptions[index];
+        if (!DoesInventorySpawnItemMatchCategory(option.itemData, option.searchTextUpper, category))
+        {
+            continue;
+        }
         if (!DoesInventorySpawnOptionMatchSearch(option, searchUpper))
         {
             continue;
@@ -933,36 +1758,64 @@ void RefreshInventoryFoodItemDropdown()
 
         g_filteredInventoryFoodItemOptionIndexes.push_back(index);
         g_itemDropdown->addItem(option.displayName);
+        if (g_itemSearchResultsList)
+        {
+            g_itemSearchResultsList->addItem(option.displayName);
+        }
     }
-
-    RefreshInventoryFoodSuggestionButtons(searchUpper);
 
     if (g_filteredInventoryFoodItemOptionIndexes.empty())
     {
         if (!g_inventoryFoodItemOptionsLoaded)
         {
             g_itemDropdown->addItem("Loading items...");
+            if (g_itemSearchResultsList)
+            {
+                g_itemSearchResultsList->addItem("Loading items...");
+            }
         }
         else if (g_inventoryFoodItemOptions.empty())
         {
             g_itemDropdown->addItem("No spawnable items available");
+            if (g_itemSearchResultsList)
+            {
+                g_itemSearchResultsList->addItem("No spawnable items available");
+            }
         }
         else
         {
             g_itemDropdown->addItem("No matching items");
+            if (g_itemSearchResultsList)
+            {
+                g_itemSearchResultsList->addItem("No matching items");
+            }
         }
 
         g_itemDropdown->setIndexSelected(0);
+        if (g_itemSearchResultsList)
+        {
+            g_itemSearchResultsList->clearIndexSelected();
+        }
         return;
     }
 
     if (g_filteredInventoryFoodItemOptionIndexes.size() == 1)
     {
         g_itemDropdown->setIndexSelected(0);
+        if (g_itemSearchResultsList)
+        {
+            g_itemSearchResultsList->setIndexSelected(0);
+            g_itemSearchResultsList->beginToItemSelected();
+        }
         return;
     }
 
     g_itemDropdown->setIndexSelected(MyGUI::ITEM_NONE);
+    if (g_itemSearchResultsList)
+    {
+        g_itemSearchResultsList->clearIndexSelected();
+        g_itemSearchResultsList->beginToItemFirst();
+    }
 }
 
 void ResetInventoryFoodItemOptions()
@@ -970,9 +1823,6 @@ void ResetInventoryFoodItemOptions()
     g_inventoryFoodItemOptions.clear();
     g_filteredInventoryFoodItemOptionIndexes.clear();
     g_inventoryFoodItemOptionsLoaded = false;
-    g_itemSuggestionOptionIndex1 = MyGUI::ITEM_NONE;
-    g_itemSuggestionOptionIndex2 = MyGUI::ITEM_NONE;
-    g_itemSuggestionOptionIndex3 = MyGUI::ITEM_NONE;
 }
 
 void EnsureInventoryFoodItemOptionsLoaded()
@@ -984,6 +1834,12 @@ void EnsureInventoryFoodItemOptionsLoaded()
 
     lektor<GameData*> itemDatas;
     ou->gamedata.getDataOfType(itemDatas, ITEM);
+    lektor<GameData*> weaponDatas;
+    ou->gamedata.getDataOfType(weaponDatas, WEAPON);
+    lektor<GameData*> armourDatas;
+    ou->gamedata.getDataOfType(armourDatas, ARMOUR);
+    lektor<GameData*> crossbowDatas;
+    ou->gamedata.getDataOfType(crossbowDatas, CROSSBOW);
 
     g_inventoryFoodItemOptions.clear();
 
@@ -998,11 +1854,56 @@ void EnsureInventoryFoodItemOptionsLoaded()
         InventorySpawnOption option;
         option.displayName = BuildInventorySpawnOptionLabel(itemData);
         option.searchTextUpper = BuildInventorySpawnOptionSearchText(itemData, option.displayName);
-        if (!IsAllowedInventorySpawnItem(itemData, option.searchTextUpper))
+        if (!DoesInventorySpawnItemMatchCategory(itemData, option.searchTextUpper, InventorySpawnCategory_All))
         {
             continue;
         }
 
+        option.itemData = itemData;
+        g_inventoryFoodItemOptions.push_back(option);
+    }
+
+    for (lektor<GameData*>::const_iterator it = weaponDatas.begin(); it != weaponDatas.end(); ++it)
+    {
+        GameData* itemData = *it;
+        if (!itemData || !itemData->isValid())
+        {
+            continue;
+        }
+
+        InventorySpawnOption option;
+        option.displayName = BuildInventorySpawnOptionLabel(itemData);
+        option.searchTextUpper = BuildInventorySpawnOptionSearchText(itemData, option.displayName);
+        option.itemData = itemData;
+        g_inventoryFoodItemOptions.push_back(option);
+    }
+
+    for (lektor<GameData*>::const_iterator it = armourDatas.begin(); it != armourDatas.end(); ++it)
+    {
+        GameData* itemData = *it;
+        if (!itemData || !itemData->isValid())
+        {
+            continue;
+        }
+
+        InventorySpawnOption option;
+        option.displayName = BuildInventorySpawnOptionLabel(itemData);
+        option.searchTextUpper = BuildInventorySpawnOptionSearchText(itemData, option.displayName);
+        option.itemData = itemData;
+        g_inventoryFoodItemOptions.push_back(option);
+    }
+
+    for (lektor<GameData*>::const_iterator it = crossbowDatas.begin(); it != crossbowDatas.end(); ++it)
+    {
+        GameData* itemData = *it;
+        if (!itemData || !itemData->isValid())
+        {
+            continue;
+        }
+
+        InventorySpawnOption option;
+        option.displayName = BuildInventorySpawnOptionLabel(itemData);
+        option.searchTextUpper = BuildInventorySpawnOptionSearchText(itemData, option.displayName);
         option.itemData = itemData;
         g_inventoryFoodItemOptions.push_back(option);
     }
@@ -1112,7 +2013,62 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_teleportSectionText, teleportVisible);
     SetWidgetVisible(g_teleportSelectedToCameraButton, teleportVisible);
 
+    SetWidgetVisible(g_inventorySectionText, inventoryVisible);
+    SetWidgetVisible(g_moneyAmountLabelText, inventoryVisible);
+    SetWidgetVisible(g_moneyAmountEdit, inventoryVisible);
+    SetWidgetVisible(g_addMoneyButton, inventoryVisible);
+    SetWidgetVisible(g_spawnFoodSectionText, inventoryVisible);
+    SetWidgetVisible(g_itemCategoryLabelText, inventoryVisible);
+    SetWidgetVisible(g_itemCategoryDropdown, inventoryVisible);
+    SetWidgetVisible(g_itemSearchLabelText, inventoryVisible);
+    SetWidgetVisible(g_itemSearchEdit, inventoryVisible);
+    SetWidgetVisible(g_itemSearchResultsList, inventoryVisible);
+    SetWidgetVisible(g_itemDropdownLabelText, inventoryVisible);
+    SetWidgetVisible(g_itemDropdown, inventoryVisible);
+    SetWidgetVisible(g_itemQuantityLabelText, inventoryVisible);
+    SetWidgetVisible(g_itemQuantityEdit, inventoryVisible);
+    SetWidgetVisible(g_spawnItemButton, inventoryVisible);
+
     SetWidgetVisible(g_statusText, bodyVisible);
+}
+
+void PersistCollapsedStateSetting()
+{
+    std::string configPath;
+    if (!TryResolveModConfigPath(&configPath))
+    {
+        LogWarnLine("collapsed-state persistence skipped: could not resolve mod config path");
+        return;
+    }
+
+    std::string configText;
+    if (!TryReadTextFile(configPath, &configText))
+    {
+        std::stringstream line;
+        line << "collapsed-state persistence skipped: could not read " << configPath;
+        LogWarnLine(line.str());
+        return;
+    }
+
+    if (!TryReplaceJsonBoolByKey(&configText, "start_collapsed", g_panelCollapsed))
+    {
+        std::stringstream line;
+        line << "collapsed-state persistence skipped: missing start_collapsed in " << configPath;
+        LogWarnLine(line.str());
+        return;
+    }
+
+    if (!TryWriteTextFile(configPath, configText))
+    {
+        std::stringstream line;
+        line << "collapsed-state persistence failed: could not write " << configPath;
+        LogWarnLine(line.str());
+        return;
+    }
+
+    std::stringstream line;
+    line << "event=testkit_panel_collapsed_persisted collapsed=" << (g_panelCollapsed ? "true" : "false");
+    LogDebugLine(line.str());
 }
 
 void ClearForceDyingArm(const char* reason, bool updateStatus)
@@ -1498,11 +2454,11 @@ void ResetPanelWidgetPointers()
     g_moneyAmountEdit = 0;
     g_addMoneyButton = 0;
     g_spawnFoodSectionText = 0;
+    g_itemCategoryLabelText = 0;
+    g_itemCategoryDropdown = 0;
     g_itemSearchLabelText = 0;
     g_itemSearchEdit = 0;
-    g_itemSuggestionButton1 = 0;
-    g_itemSuggestionButton2 = 0;
-    g_itemSuggestionButton3 = 0;
+    g_itemSearchResultsList = 0;
     g_itemDropdownLabelText = 0;
     g_itemDropdown = 0;
     g_itemQuantityLabelText = 0;
@@ -1548,7 +2504,7 @@ void RefreshHotkeyBinding()
 {
     const std::string keyToken = TrimAscii(g_togglePanelKey);
     const std::string keyUpper = ToUpperAscii(keyToken);
-    if (keyUpper == "NONE")
+    if (keyUpper == "NONE" || keyUpper == "UNBOUND")
     {
         g_hotkeyEnabled = false;
         g_hotkeyVirtualKey = 0;
@@ -1734,6 +2690,281 @@ void LogPanelCollapsedEvent(bool collapsed, const char* source)
     LogInfoLine(line.str());
 }
 
+EMC_Result __cdecl GetTogglePanelHotkeyKeybind(void*, EMC_KeybindValueV1* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    int32_t keycode = EMC_KEY_UNBOUND;
+    if (g_hotkeyEnabled && !TryMapTogglePanelTokenToOisKeycode(g_togglePanelKey, &keycode))
+    {
+        keycode = EMC_KEY_UNBOUND;
+    }
+
+    outValue->keycode = keycode;
+    outValue->modifiers = 0u;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetTogglePanelHotkeyKeybind(void*, EMC_KeybindValueV1 value, char* errBuf, uint32_t errBufSize)
+{
+    if (value.modifiers != 0u)
+    {
+        CopyModHubErrorMessage(errBuf, errBufSize, "use_modifier_toggles");
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    std::string updatedToken;
+    if (!TryMapOisKeycodeToTogglePanelToken(value.keycode, &updatedToken))
+    {
+        CopyModHubErrorMessage(errBuf, errBufSize, "invalid_keybind");
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    const std::string previousToken = g_togglePanelKey;
+    g_togglePanelKey = updatedToken;
+    RefreshHotkeyBinding();
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_togglePanelKey = previousToken;
+        RefreshHotkeyBinding();
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetTogglePanelRequireCtrl(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_togglePanelRequireCtrl ? 1 : 0;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetTogglePanelRequireCtrl(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    if (value != 0 && value != 1)
+    {
+        CopyModHubErrorMessage(errBuf, errBufSize, "value_must_be_bool");
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    const bool previousValue = g_togglePanelRequireCtrl;
+    g_togglePanelRequireCtrl = value != 0;
+    RefreshHotkeyBinding();
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_togglePanelRequireCtrl = previousValue;
+        RefreshHotkeyBinding();
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetTogglePanelRequireShift(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_togglePanelRequireShift ? 1 : 0;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetTogglePanelRequireShift(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    if (value != 0 && value != 1)
+    {
+        CopyModHubErrorMessage(errBuf, errBufSize, "value_must_be_bool");
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    const bool previousValue = g_togglePanelRequireShift;
+    g_togglePanelRequireShift = value != 0;
+    RefreshHotkeyBinding();
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_togglePanelRequireShift = previousValue;
+        RefreshHotkeyBinding();
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetTogglePanelRequireAlt(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_togglePanelRequireAlt ? 1 : 0;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetTogglePanelRequireAlt(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    if (value != 0 && value != 1)
+    {
+        CopyModHubErrorMessage(errBuf, errBufSize, "value_must_be_bool");
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    const bool previousValue = g_togglePanelRequireAlt;
+    g_togglePanelRequireAlt = value != 0;
+    RefreshHotkeyBinding();
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_togglePanelRequireAlt = previousValue;
+        RefreshHotkeyBinding();
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+const EMC_ModDescriptorV1 kModHubModDescriptor = {
+    kModHubNamespaceId,
+    kModHubNamespaceDisplayName,
+    kModHubModId,
+    kModHubModDisplayName,
+    0
+};
+
+const EMC_KeybindSettingDefV1 kModHubTogglePanelKeySetting = {
+    "toggle_panel_key",
+    kModHubTogglePanelKeyLabel,
+    kModHubTogglePanelKeyDescription,
+    0,
+    &GetTogglePanelHotkeyKeybind,
+    &SetTogglePanelHotkeyKeybind
+};
+
+const EMC_BoolSettingDefV1 kModHubTogglePanelCtrlSetting = {
+    "toggle_panel_ctrl",
+    kModHubTogglePanelCtrlLabel,
+    kModHubTogglePanelCtrlDescription,
+    0,
+    &GetTogglePanelRequireCtrl,
+    &SetTogglePanelRequireCtrl
+};
+
+const EMC_BoolSettingDefV1 kModHubTogglePanelShiftSetting = {
+    "toggle_panel_shift",
+    kModHubTogglePanelShiftLabel,
+    kModHubTogglePanelShiftDescription,
+    0,
+    &GetTogglePanelRequireShift,
+    &SetTogglePanelRequireShift
+};
+
+const EMC_BoolSettingDefV1 kModHubTogglePanelAltSetting = {
+    "toggle_panel_alt",
+    kModHubTogglePanelAltLabel,
+    kModHubTogglePanelAltDescription,
+    0,
+    &GetTogglePanelRequireAlt,
+    &SetTogglePanelRequireAlt
+};
+
+const emc::ModHubClientSettingRowV1 kModHubRows[] = {
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_KEYBIND, &kModHubTogglePanelKeySetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelCtrlSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelShiftSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting }
+};
+
+const emc::ModHubClientTableRegistrationV1 kModHubRegistration = {
+    &kModHubModDescriptor,
+    kModHubRows,
+    static_cast<uint32_t>(sizeof(kModHubRows) / sizeof(kModHubRows[0]))
+};
+
+void EnsureModHubClientConfigured()
+{
+    if (g_modHubClientConfigured)
+    {
+        return;
+    }
+
+    emc::ModHubClient::Config config;
+    config.table_registration = &kModHubRegistration;
+    g_modHubClient.SetConfig(config);
+    g_modHubClientConfigured = true;
+}
+
+void LogModHubClientAttemptResult(const char* phase, emc::ModHubClient::AttemptResult result)
+{
+    std::stringstream line;
+    line << "event=testkit_mod_hub_attach phase=\"" << (phase ? phase : "unknown") << "\"";
+
+    switch (result)
+    {
+    case emc::ModHubClient::ATTACH_SUCCESS:
+        line << " result=\"success\"";
+        break;
+    case emc::ModHubClient::ATTACH_FAILED:
+        line << " result=\"attach_failed\"";
+        break;
+    case emc::ModHubClient::REGISTRATION_FAILED:
+        line << " result=\"registration_failed\"";
+        break;
+    case emc::ModHubClient::INVALID_CONFIGURATION:
+        line << " result=\"invalid_configuration\"";
+        break;
+    default:
+        line << " result=\"unknown\"";
+        break;
+    }
+
+    line << " failure_code=" << g_modHubClient.LastAttemptFailureResult()
+         << " use_hub_ui=" << (g_modHubClient.UseHubUi() ? "true" : "false")
+         << " retry_pending=" << (g_modHubClient.IsAttachRetryPending() ? "true" : "false")
+         << " retried=" << (g_modHubClient.HasAttachRetryAttempted() ? "true" : "false");
+    LogInfoLine(line.str());
+}
+
+void StartModHubClient()
+{
+    EnsureModHubClientConfigured();
+    LogModHubClientAttemptResult("startup", g_modHubClient.OnStartup());
+}
+
+void TickModHubAttachRetry()
+{
+    if (!g_modHubClient.IsAttachRetryPending() || g_modHubClient.HasAttachRetryAttempted())
+    {
+        return;
+    }
+
+    LogModHubClientAttemptResult("retry", g_modHubClient.OnOptionsWindowInit());
+}
+
 void TogglePanelHidden(const char* source)
 {
     g_panelHidden = !g_panelHidden;
@@ -1761,6 +2992,7 @@ void TogglePanelCollapsed(const char* source)
 
     UpdateCollapseButtonCaption();
     ApplyPanelLayout();
+    PersistCollapsedStateSetting();
     SetStatusMessage(g_panelCollapsed ? "Panel collapsed" : "Panel expanded");
     LogPanelCollapsedEvent(g_panelCollapsed, source);
 }
@@ -3695,47 +4927,21 @@ void OnInventoryItemSearchTextChanged(MyGUI::EditBox*)
     RefreshInventoryFoodItemDropdown();
 }
 
-void OnInventorySuggestionButton1Pressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+void OnInventoryCategoryChanged(MyGUI::ComboBox*, size_t)
 {
-    if (id != MyGUI::MouseButton::Left)
-    {
-        return;
-    }
-
-    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
-    TryPopulateInventoryFoodSelection(g_itemSuggestionOptionIndex1);
-
-    if (inputManager)
-    {
-        inputManager->resetMouseCaptureWidget();
-    }
+    EnsureInventoryFoodItemOptionsLoaded();
+    RefreshInventoryFoodItemDropdown();
 }
 
-void OnInventorySuggestionButton2Pressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+void OnInventorySearchResultsActivated(MyGUI::ListBox*, size_t index)
 {
-    if (id != MyGUI::MouseButton::Left)
+    if (index >= g_filteredInventoryFoodItemOptionIndexes.size())
     {
         return;
     }
 
     MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
-    TryPopulateInventoryFoodSelection(g_itemSuggestionOptionIndex2);
-
-    if (inputManager)
-    {
-        inputManager->resetMouseCaptureWidget();
-    }
-}
-
-void OnInventorySuggestionButton3Pressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
-{
-    if (id != MyGUI::MouseButton::Left)
-    {
-        return;
-    }
-
-    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
-    TryPopulateInventoryFoodSelection(g_itemSuggestionOptionIndex3);
+    TryPopulateInventoryFoodSelection(g_filteredInventoryFoodItemOptionIndexes[index]);
 
     if (inputManager)
     {
@@ -4427,6 +5633,17 @@ void ConfigureComboBoxWidget(MyGUI::ComboBox* widget)
     widget->setMaxListLength(kInventoryItemDropdownMaxListLength);
 }
 
+void ConfigureListBoxWidget(MyGUI::ListBox* widget)
+{
+    if (!widget)
+    {
+        return;
+    }
+
+    widget->setScrollVisible(true);
+    widget->setActivateOnClick(true);
+}
+
 bool HasAllPanelWidgets()
 {
     return g_panel
@@ -4460,11 +5677,11 @@ bool HasAllPanelWidgets()
         && g_moneyAmountEdit
         && g_addMoneyButton
         && g_spawnFoodSectionText
+        && g_itemCategoryLabelText
+        && g_itemCategoryDropdown
         && g_itemSearchLabelText
         && g_itemSearchEdit
-        && g_itemSuggestionButton1
-        && g_itemSuggestionButton2
-        && g_itemSuggestionButton3
+        && g_itemSearchResultsList
         && g_itemDropdownLabelText
         && g_itemDropdown
         && g_itemQuantityLabelText
@@ -4508,6 +5725,7 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_inventorySectionText);
     ConfigureTextWidget(g_moneyAmountLabelText);
     ConfigureTextWidget(g_spawnFoodSectionText);
+    ConfigureTextWidget(g_itemCategoryLabelText);
     ConfigureTextWidget(g_itemSearchLabelText);
     ConfigureTextWidget(g_itemDropdownLabelText);
     ConfigureTextWidget(g_itemQuantityLabelText);
@@ -4516,7 +5734,9 @@ void InitializePanelWidgets()
     ConfigureEditBoxWidget(g_moneyAmountEdit);
     ConfigureEditBoxWidget(g_itemSearchEdit);
     ConfigureEditBoxWidget(g_itemQuantityEdit);
+    ConfigureComboBoxWidget(g_itemCategoryDropdown);
     ConfigureComboBoxWidget(g_itemDropdown);
+    ConfigureListBoxWidget(g_itemSearchResultsList);
 
     g_targetSectionText->setCaption("Target");
     g_targetNameText->setCaption("Name: Pending target inspection");
@@ -4532,8 +5752,9 @@ void InitializePanelWidgets()
     g_inventorySectionText->setCaption("Inventory");
     g_moneyAmountLabelText->setCaption("Cats To Add");
     g_spawnFoodSectionText->setCaption("Spawn Items");
+    g_itemCategoryLabelText->setCaption("Category");
     g_itemSearchLabelText->setCaption("Search");
-    g_itemDropdownLabelText->setCaption("Item");
+    g_itemDropdownLabelText->setCaption("Selected Item");
     g_itemQuantityLabelText->setCaption("Quantity");
     g_dangerousSectionText->setCaption("Dangerous");
 
@@ -4549,15 +5770,18 @@ void InitializePanelWidgets()
     g_moneyAmountEdit->setMaxTextLength(10);
     g_moneyAmountEdit->setOnlyText("1000");
     g_addMoneyButton->setCaption("Add Money");
+    g_itemCategoryDropdown->removeAllItems();
+    g_itemCategoryDropdown->addItem("All");
+    g_itemCategoryDropdown->addItem("Food");
+    g_itemCategoryDropdown->addItem("General");
+    g_itemCategoryDropdown->addItem("Armor");
+    g_itemCategoryDropdown->addItem("Weapons");
+    g_itemCategoryDropdown->setIndexSelected(0);
     g_itemSearchEdit->setEditStatic(false);
     g_itemSearchEdit->setMaxTextLength(48);
     g_itemSearchEdit->setOnlyText("");
-    g_itemSuggestionButton1->setCaption("");
-    g_itemSuggestionButton2->setCaption("");
-    g_itemSuggestionButton3->setCaption("");
-    g_itemSuggestionButton1->setEnabled(false);
-    g_itemSuggestionButton2->setEnabled(false);
-    g_itemSuggestionButton3->setEnabled(false);
+    g_itemSearchResultsList->removeAllItems();
+    g_itemSearchResultsList->clearIndexSelected();
     g_itemQuantityEdit->setEditStatic(false);
     g_itemQuantityEdit->setMaxTextLength(10);
     g_itemQuantityEdit->setOnlyText("1");
@@ -4583,10 +5807,9 @@ void InitializePanelWidgets()
     g_damageRightLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightLegButtonPressed);
     g_teleportSelectedToCameraButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportSelectedToCameraButtonPressed);
     g_addMoneyButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnAddMoneyButtonPressed);
+    g_itemCategoryDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnInventoryCategoryChanged);
     g_itemSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnInventoryItemSearchTextChanged);
-    g_itemSuggestionButton1->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventorySuggestionButton1Pressed);
-    g_itemSuggestionButton2->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventorySuggestionButton2Pressed);
-    g_itemSuggestionButton3->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventorySuggestionButton3Pressed);
+    g_itemSearchResultsList->eventListMouseItemActivate += MyGUI::newDelegate(&OnInventorySearchResultsActivated);
     g_spawnItemButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnItemButtonPressed);
     g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
@@ -4753,45 +5976,45 @@ void CreatePanelWidgets()
         "Kenshi_TextboxStandardText",
         MyGUI::IntCoord(14, 296, kPanelWidth - 28, 18),
         MyGUI::Align::Default);
-    g_itemSearchLabelText = g_panel->createWidget<MyGUI::TextBox>(
+    g_itemCategoryLabelText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
         MyGUI::IntCoord(20, 318, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
+    g_itemCategoryDropdown = g_panel->createWidget<MyGUI::ComboBox>(
+        "Kenshi_ComboBox",
+        MyGUI::IntCoord(20, 340, kPanelWidth - 40, 30),
+        MyGUI::Align::Default);
+    g_itemSearchLabelText = g_panel->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(20, 376, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
     g_itemSearchEdit = g_panel->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        MyGUI::IntCoord(20, 340, kPanelWidth - 40, 28),
+        MyGUI::IntCoord(20, 398, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
-    g_itemSuggestionButton1 = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(20, 374, kPanelWidth - 40, 24),
-        MyGUI::Align::Default);
-    g_itemSuggestionButton2 = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(20, 402, kPanelWidth - 40, 24),
-        MyGUI::Align::Default);
-    g_itemSuggestionButton3 = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(20, 430, kPanelWidth - 40, 24),
+    g_itemSearchResultsList = g_panel->createWidget<MyGUI::ListBox>(
+        "Kenshi_ListBox",
+        MyGUI::IntCoord(20, 432, kPanelWidth - 40, 84),
         MyGUI::Align::Default);
     g_itemDropdownLabelText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 460, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 522, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_itemDropdown = g_panel->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        MyGUI::IntCoord(20, 482, kPanelWidth - 40, 30),
+        MyGUI::IntCoord(20, 544, kPanelWidth - 40, 30),
         MyGUI::Align::Default);
     g_itemQuantityLabelText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 518, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 580, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_itemQuantityEdit = g_panel->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        MyGUI::IntCoord(20, 540, 156, 28),
+        MyGUI::IntCoord(20, 602, 156, 28),
         MyGUI::Align::Default);
     g_spawnItemButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(184, 540, 156, 28),
+        MyGUI::IntCoord(184, 602, 156, 28),
         MyGUI::Align::Default);
     g_dangerousSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
@@ -4803,7 +6026,7 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_statusText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 596, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 664, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
 
     if (!HasAllPanelWidgets())
@@ -4866,6 +6089,7 @@ void PlayerInterface_updateUT_hook(PlayerInterface* thisptr)
 {
     PlayerInterface_updateUT_orig(thisptr);
 
+    TickModHubAttachRetry();
     TickPanelToggleHotkey();
     EnsurePanel(thisptr);
 }
@@ -4909,6 +6133,7 @@ __declspec(dllexport) void startPlugin()
     LogInfoLine(versionLine.str());
 
     LoadConfig();
+    StartModHubClient();
     if (!g_pluginEnabled)
     {
         LogInfoLine("plugin disabled by config");
