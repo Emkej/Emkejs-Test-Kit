@@ -60,6 +60,17 @@ const char* kTeleportDestinationLabel = "Test Spot";
 const Ogre::Vector3 kTeleportDestinationCenter(-56164.4f, 1605.11f, 20653.6f);
 const float kFloatChangeEpsilon = 0.001f;
 const int kInventoryItemDropdownMaxListLength = 10;
+const char* const kInventorySpawnExtraItemKeywords[] = {
+    "BUILDING MATERIAL",
+    "IRON PLATE",
+    "IRON ORE",
+    "COPPER",
+    "CHAINMAIL",
+    "HACKSAW",
+    "ELECTRICAL COMPONENT",
+    "FABRIC",
+    "STEEL BAR"
+};
 
 enum LoggingLevel
 {
@@ -341,6 +352,49 @@ std::string BuildInventorySpawnOptionLabel(GameData* itemData)
     std::stringstream fallback;
     fallback << "Item " << itemData->id;
     return fallback.str();
+}
+
+std::string BuildInventorySpawnOptionSearchText(GameData* itemData, const std::string& displayName)
+{
+    std::string searchTextUpper = ToUpperAscii(displayName);
+    if (!itemData)
+    {
+        return searchTextUpper;
+    }
+
+    const std::string stringId = TrimAscii(itemData->stringID);
+    if (!stringId.empty())
+    {
+        searchTextUpper += " ";
+        searchTextUpper += ToUpperAscii(stringId);
+    }
+
+    return searchTextUpper;
+}
+
+bool IsAllowedInventorySpawnItem(GameData* itemData, const std::string& searchTextUpper)
+{
+    if (!itemData || !itemData->isValid())
+    {
+        return false;
+    }
+
+    if (Item::isFood(itemData))
+    {
+        return true;
+    }
+
+    for (size_t index = 0;
+         index < sizeof(kInventorySpawnExtraItemKeywords) / sizeof(kInventorySpawnExtraItemKeywords[0]);
+         ++index)
+    {
+        if (searchTextUpper.find(kInventorySpawnExtraItemKeywords[index]) != std::string::npos)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool DoesInventorySpawnOptionMatchSearch(const InventorySpawnOption& option, const std::string& searchUpper)
@@ -887,15 +941,15 @@ void RefreshInventoryFoodItemDropdown()
     {
         if (!g_inventoryFoodItemOptionsLoaded)
         {
-            g_itemDropdown->addItem("Loading food items...");
+            g_itemDropdown->addItem("Loading items...");
         }
         else if (g_inventoryFoodItemOptions.empty())
         {
-            g_itemDropdown->addItem("No food items available");
+            g_itemDropdown->addItem("No spawnable items available");
         }
         else
         {
-            g_itemDropdown->addItem("No matching food items");
+            g_itemDropdown->addItem("No matching items");
         }
 
         g_itemDropdown->setIndexSelected(0);
@@ -936,20 +990,17 @@ void EnsureInventoryFoodItemOptionsLoaded()
     for (lektor<GameData*>::const_iterator it = itemDatas.begin(); it != itemDatas.end(); ++it)
     {
         GameData* itemData = *it;
-        if (!itemData || !itemData->isValid() || !Item::isFood(itemData))
+        if (!itemData || !itemData->isValid())
         {
             continue;
         }
 
         InventorySpawnOption option;
         option.displayName = BuildInventorySpawnOptionLabel(itemData);
-        option.searchTextUpper = ToUpperAscii(option.displayName);
-
-        const std::string stringId = TrimAscii(itemData->stringID);
-        if (!stringId.empty())
+        option.searchTextUpper = BuildInventorySpawnOptionSearchText(itemData, option.displayName);
+        if (!IsAllowedInventorySpawnItem(itemData, option.searchTextUpper))
         {
-            option.searchTextUpper += " ";
-            option.searchTextUpper += ToUpperAscii(stringId);
+            continue;
         }
 
         option.itemData = itemData;
@@ -3724,7 +3775,7 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
         result << "event=testkit_action_result action=\"spawn_inventory_item\" success=false reason=\"no_item_selected\""
                << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
         LogInfoLine(result.str());
-        SetStatusMessage("Spawn Item failed - select a food item");
+        SetStatusMessage("Spawn Item failed - select an item");
         return;
     }
 
@@ -4480,9 +4531,9 @@ void InitializePanelWidgets()
     g_teleportSectionText->setCaption("Teleport");
     g_inventorySectionText->setCaption("Inventory");
     g_moneyAmountLabelText->setCaption("Cats To Add");
-    g_spawnFoodSectionText->setCaption("Spawn Food");
+    g_spawnFoodSectionText->setCaption("Spawn Items");
     g_itemSearchLabelText->setCaption("Search");
-    g_itemDropdownLabelText->setCaption("Food Item");
+    g_itemDropdownLabelText->setCaption("Item");
     g_itemQuantityLabelText->setCaption("Quantity");
     g_dangerousSectionText->setCaption("Dangerous");
 
