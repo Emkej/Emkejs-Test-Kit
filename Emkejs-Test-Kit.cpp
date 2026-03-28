@@ -48,6 +48,7 @@ namespace
 const char* kPluginName = "Emkejs-Test-Kit";
 const char* kConfigFileName = "mod-config.json";
 const char* kDeveloperModeConfigKey = "developer_mode";
+const char* kSavedLocationsConfigKey = "saved_locations";
 const char* kDefaultTogglePanelKey = "D";
 const int kPanelLeft = 18;
 const int kPanelTop = 140;
@@ -261,6 +262,22 @@ struct InventorySpawnOption
     GameData* itemData;
 };
 
+struct SavedLocation
+{
+    SavedLocation()
+        : position(0.0f, 0.0f, 0.0f)
+        , pinned(false)
+        , lastUsedUtc(0u)
+    {
+    }
+
+    std::string id;
+    std::string name;
+    Ogre::Vector3 position;
+    bool pinned;
+    unsigned long long lastUsedUtc;
+};
+
 typedef unsigned int InventorySearchCodepoint;
 typedef std::vector<InventorySearchCodepoint> InventorySearchText;
 
@@ -415,6 +432,11 @@ MyGUI::Button* g_damageLeftLegButton = 0;
 MyGUI::Button* g_damageRightLegButton = 0;
 MyGUI::TextBox* g_teleportSectionText = 0;
 MyGUI::Button* g_teleportSelectedToCameraButton = 0;
+MyGUI::TextBox* g_saveLocationNameLabelText = 0;
+MyGUI::EditBox* g_saveLocationNameEdit = 0;
+MyGUI::Button* g_saveSelectedLocationButton = 0;
+MyGUI::TextBox* g_savedLocationsSectionText = 0;
+MyGUI::ListBox* g_savedLocationsList = 0;
 MyGUI::TextBox* g_inventorySectionText = 0;
 MyGUI::TextBox* g_moneyAmountLabelText = 0;
 MyGUI::EditBox* g_moneyAmountEdit = 0;
@@ -436,6 +458,7 @@ MyGUI::TextBox* g_statusText = 0;
 
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
+std::vector<SavedLocation> g_savedLocations;
 bool g_inventoryFoodItemOptionsLoaded = false;
 PendingInventorySearchShortcut g_pendingInventorySearchShortcut;
 bool g_haveInventorySearchEditSnapshot = false;
@@ -1832,6 +1855,626 @@ bool TryParseJsonStringByKey(const std::string& content, const char* key, std::s
     return false;
 }
 
+void SkipJsonWhitespace(const std::string& content, std::string::size_type* position)
+{
+    if (!position)
+    {
+        return;
+    }
+
+    while (*position < content.size()
+        && std::isspace(static_cast<unsigned char>(content[*position])) != 0)
+    {
+        ++(*position);
+    }
+}
+
+bool TryFindJsonStringEnd(
+    const std::string& content,
+    std::string::size_type openingQuotePos,
+    std::string::size_type* closingQuotePosOut)
+{
+    if (openingQuotePos >= content.size() || content[openingQuotePos] != '"' || !closingQuotePosOut)
+    {
+        return false;
+    }
+
+    bool escaped = false;
+    std::string::size_type position = openingQuotePos + 1;
+    while (position < content.size())
+    {
+        const char current = content[position];
+        if (escaped)
+        {
+            escaped = false;
+        }
+        else if (current == '\\')
+        {
+            escaped = true;
+        }
+        else if (current == '"')
+        {
+            *closingQuotePosOut = position;
+            return true;
+        }
+
+        ++position;
+    }
+
+    return false;
+}
+
+bool TryFindMatchingJsonDelimiter(
+    const std::string& content,
+    std::string::size_type openingPos,
+    char openingChar,
+    char closingChar,
+    std::string::size_type* closingPosOut)
+{
+    if (openingPos >= content.size() || content[openingPos] != openingChar || !closingPosOut)
+    {
+        return false;
+    }
+
+    int depth = 0;
+    std::string::size_type position = openingPos;
+    while (position < content.size())
+    {
+        const char current = content[position];
+        if (current == '"')
+        {
+            std::string::size_type stringEnd = 0;
+            if (!TryFindJsonStringEnd(content, position, &stringEnd))
+            {
+                return false;
+            }
+
+            position = stringEnd;
+        }
+        else if (current == openingChar)
+        {
+            ++depth;
+        }
+        else if (current == closingChar)
+        {
+            --depth;
+            if (depth == 0)
+            {
+                *closingPosOut = position;
+                return true;
+            }
+
+            if (depth < 0)
+            {
+                return false;
+            }
+        }
+
+        ++position;
+    }
+
+    return false;
+}
+
+bool TryFindJsonValueStartByKey(
+    const std::string& content,
+    const char* key,
+    std::string::size_type* valuePosOut)
+{
+    if (!key || !valuePosOut)
+    {
+        return false;
+    }
+
+    const std::string needle = std::string("\"") + key + "\"";
+    const std::string::size_type keyPos = content.find(needle);
+    if (keyPos == std::string::npos)
+    {
+        return false;
+    }
+
+    std::string::size_type valuePos = content.find(':', keyPos + needle.size());
+    if (valuePos == std::string::npos)
+    {
+        return false;
+    }
+
+    ++valuePos;
+    SkipJsonWhitespace(content, &valuePos);
+    if (valuePos >= content.size())
+    {
+        return false;
+    }
+
+    *valuePosOut = valuePos;
+    return true;
+}
+
+bool TryFindJsonValueEnd(
+    const std::string& content,
+    std::string::size_type valuePos,
+    std::string::size_type* valueEndOut)
+{
+    if (valuePos >= content.size() || !valueEndOut)
+    {
+        return false;
+    }
+
+    const char valueLead = content[valuePos];
+    if (valueLead == '"')
+    {
+        std::string::size_type stringEnd = 0;
+        if (!TryFindJsonStringEnd(content, valuePos, &stringEnd))
+        {
+            return false;
+        }
+
+        *valueEndOut = stringEnd + 1;
+        return true;
+    }
+
+    if (valueLead == '[')
+    {
+        std::string::size_type arrayEnd = 0;
+        if (!TryFindMatchingJsonDelimiter(content, valuePos, '[', ']', &arrayEnd))
+        {
+            return false;
+        }
+
+        *valueEndOut = arrayEnd + 1;
+        return true;
+    }
+
+    if (valueLead == '{')
+    {
+        std::string::size_type objectEnd = 0;
+        if (!TryFindMatchingJsonDelimiter(content, valuePos, '{', '}', &objectEnd))
+        {
+            return false;
+        }
+
+        *valueEndOut = objectEnd + 1;
+        return true;
+    }
+
+    std::string::size_type valueEnd = valuePos;
+    while (valueEnd < content.size()
+        && content[valueEnd] != ','
+        && content[valueEnd] != '}'
+        && content[valueEnd] != ']')
+    {
+        ++valueEnd;
+    }
+
+    while (valueEnd > valuePos
+        && std::isspace(static_cast<unsigned char>(content[valueEnd - 1])) != 0)
+    {
+        --valueEnd;
+    }
+
+    if (valueEnd <= valuePos)
+    {
+        return false;
+    }
+
+    *valueEndOut = valueEnd;
+    return true;
+}
+
+bool TryReplaceJsonRawValueByKey(std::string* content, const char* key, const std::string& rawValue)
+{
+    if (!content || !key)
+    {
+        return false;
+    }
+
+    std::string::size_type valuePos = 0;
+    if (!TryFindJsonValueStartByKey(*content, key, &valuePos))
+    {
+        return false;
+    }
+
+    std::string::size_type valueEnd = 0;
+    if (!TryFindJsonValueEnd(*content, valuePos, &valueEnd))
+    {
+        return false;
+    }
+
+    content->replace(valuePos, valueEnd - valuePos, rawValue);
+    return true;
+}
+
+bool TryInsertJsonRawValueByKey(std::string* content, const char* key, const std::string& rawValue)
+{
+    if (!content || !key)
+    {
+        return false;
+    }
+
+    const std::string::size_type objectEnd = content->rfind('}');
+    if (objectEnd == std::string::npos)
+    {
+        return false;
+    }
+
+    std::string::size_type insertPos = objectEnd;
+    while (insertPos > 0
+        && std::isspace(static_cast<unsigned char>((*content)[insertPos - 1])) != 0)
+    {
+        --insertPos;
+    }
+
+    std::string::size_type previousPos = insertPos;
+    while (previousPos > 0
+        && std::isspace(static_cast<unsigned char>((*content)[previousPos - 1])) != 0)
+    {
+        --previousPos;
+    }
+
+    const bool needsComma = previousPos > 0 && (*content)[previousPos - 1] != '{';
+    std::stringstream insertion;
+    if (needsComma)
+    {
+        insertion << ",";
+    }
+    insertion << "\n  \"" << key << "\": " << rawValue;
+
+    content->insert(insertPos, insertion.str());
+    return true;
+}
+
+bool TryUpsertJsonRawValueByKey(std::string* content, const char* key, const std::string& rawValue)
+{
+    return TryReplaceJsonRawValueByKey(content, key, rawValue) || TryInsertJsonRawValueByKey(content, key, rawValue);
+}
+
+bool TryParseJsonFloatByKey(const std::string& content, const char* key, float* outValue)
+{
+    if (!key || !outValue)
+    {
+        return false;
+    }
+
+    std::string::size_type valuePos = 0;
+    if (!TryFindJsonValueStartByKey(content, key, &valuePos))
+    {
+        return false;
+    }
+
+    std::string::size_type endPos = valuePos;
+    bool sawDigit = false;
+
+    if (endPos < content.size() && (content[endPos] == '-' || content[endPos] == '+'))
+    {
+        ++endPos;
+    }
+
+    while (endPos < content.size() && std::isdigit(static_cast<unsigned char>(content[endPos])) != 0)
+    {
+        sawDigit = true;
+        ++endPos;
+    }
+
+    if (endPos < content.size() && content[endPos] == '.')
+    {
+        ++endPos;
+        while (endPos < content.size() && std::isdigit(static_cast<unsigned char>(content[endPos])) != 0)
+        {
+            sawDigit = true;
+            ++endPos;
+        }
+    }
+
+    if (endPos < content.size() && (content[endPos] == 'e' || content[endPos] == 'E'))
+    {
+        std::string::size_type exponentPos = endPos + 1;
+        if (exponentPos < content.size() && (content[exponentPos] == '-' || content[exponentPos] == '+'))
+        {
+            ++exponentPos;
+        }
+
+        bool exponentDigit = false;
+        while (exponentPos < content.size() && std::isdigit(static_cast<unsigned char>(content[exponentPos])) != 0)
+        {
+            exponentDigit = true;
+            ++exponentPos;
+        }
+
+        if (!exponentDigit)
+        {
+            return false;
+        }
+
+        endPos = exponentPos;
+    }
+
+    if (!sawDigit)
+    {
+        return false;
+    }
+
+    std::stringstream valueStream(content.substr(valuePos, endPos - valuePos));
+    double parsedValue = 0.0;
+    valueStream >> parsedValue;
+    if (!valueStream || !valueStream.eof())
+    {
+        return false;
+    }
+
+    *outValue = static_cast<float>(parsedValue);
+    return true;
+}
+
+bool TryParseJsonUInt64ByKey(const std::string& content, const char* key, unsigned long long* outValue)
+{
+    if (!key || !outValue)
+    {
+        return false;
+    }
+
+    std::string::size_type valuePos = 0;
+    if (!TryFindJsonValueStartByKey(content, key, &valuePos))
+    {
+        return false;
+    }
+
+    std::string::size_type endPos = valuePos;
+    while (endPos < content.size() && std::isdigit(static_cast<unsigned char>(content[endPos])) != 0)
+    {
+        ++endPos;
+    }
+
+    if (endPos == valuePos)
+    {
+        return false;
+    }
+
+    std::stringstream valueStream(content.substr(valuePos, endPos - valuePos));
+    unsigned long long parsedValue = 0u;
+    valueStream >> parsedValue;
+    if (!valueStream || !valueStream.eof())
+    {
+        return false;
+    }
+
+    *outValue = parsedValue;
+    return true;
+}
+
+bool TryParseSavedLocationObject(const std::string& content, SavedLocation* outLocation)
+{
+    if (!outLocation)
+    {
+        return false;
+    }
+
+    SavedLocation parsedLocation;
+    if (!TryParseJsonStringByKey(content, "id", &parsedLocation.id)
+        || !TryParseJsonStringByKey(content, "name", &parsedLocation.name)
+        || !TryParseJsonFloatByKey(content, "x", &parsedLocation.position.x)
+        || !TryParseJsonFloatByKey(content, "y", &parsedLocation.position.y)
+        || !TryParseJsonFloatByKey(content, "z", &parsedLocation.position.z))
+    {
+        return false;
+    }
+
+    parsedLocation.id = TrimAscii(parsedLocation.id);
+    parsedLocation.name = TrimAscii(parsedLocation.name);
+    if (parsedLocation.id.empty() || parsedLocation.name.empty())
+    {
+        return false;
+    }
+
+    bool parsedBool = false;
+    if (TryParseJsonBoolByKey(content, "pinned", &parsedBool))
+    {
+        parsedLocation.pinned = parsedBool;
+    }
+
+    unsigned long long parsedLastUsedUtc = 0u;
+    if (TryParseJsonUInt64ByKey(content, "last_used_utc", &parsedLastUsedUtc))
+    {
+        parsedLocation.lastUsedUtc = parsedLastUsedUtc;
+    }
+
+    *outLocation = parsedLocation;
+    return true;
+}
+
+bool CompareSavedLocationsForDisplay(const SavedLocation& left, const SavedLocation& right)
+{
+    if (left.pinned != right.pinned)
+    {
+        return left.pinned;
+    }
+
+    if (left.lastUsedUtc != right.lastUsedUtc)
+    {
+        return left.lastUsedUtc > right.lastUsedUtc;
+    }
+
+    const std::string leftNameUpper = ToUpperAscii(left.name);
+    const std::string rightNameUpper = ToUpperAscii(right.name);
+    if (leftNameUpper != rightNameUpper)
+    {
+        return leftNameUpper < rightNameUpper;
+    }
+
+    return left.id < right.id;
+}
+
+void SortSavedLocationsForDisplay(std::vector<SavedLocation>* locations)
+{
+    if (!locations || locations->size() < 2u)
+    {
+        return;
+    }
+
+    std::sort(locations->begin(), locations->end(), CompareSavedLocationsForDisplay);
+}
+
+bool TryParseSavedLocationsByKey(
+    const std::string& content,
+    const char* key,
+    std::vector<SavedLocation>* outLocations)
+{
+    if (!key || !outLocations)
+    {
+        return false;
+    }
+
+    std::string::size_type arrayPos = 0;
+    if (!TryFindJsonValueStartByKey(content, key, &arrayPos))
+    {
+        return false;
+    }
+
+    if (arrayPos >= content.size() || content[arrayPos] != '[')
+    {
+        return false;
+    }
+
+    std::string::size_type arrayEnd = 0;
+    if (!TryFindMatchingJsonDelimiter(content, arrayPos, '[', ']', &arrayEnd))
+    {
+        return false;
+    }
+
+    outLocations->clear();
+    std::string::size_type position = arrayPos + 1;
+    size_t skippedCount = 0u;
+    while (position < arrayEnd)
+    {
+        SkipJsonWhitespace(content, &position);
+        if (position >= arrayEnd)
+        {
+            break;
+        }
+
+        if (content[position] == ',')
+        {
+            ++position;
+            continue;
+        }
+
+        if (content[position] != '{')
+        {
+            return false;
+        }
+
+        std::string::size_type objectEnd = 0;
+        if (!TryFindMatchingJsonDelimiter(content, position, '{', '}', &objectEnd))
+        {
+            return false;
+        }
+
+        SavedLocation parsedLocation;
+        if (TryParseSavedLocationObject(content.substr(position, objectEnd - position + 1), &parsedLocation))
+        {
+            outLocations->push_back(parsedLocation);
+        }
+        else
+        {
+            ++skippedCount;
+        }
+
+        position = objectEnd + 1;
+    }
+
+    SortSavedLocationsForDisplay(outLocations);
+
+    if (skippedCount > 0u)
+    {
+        std::stringstream line;
+        line << "saved locations skipped invalid_entries=" << skippedCount;
+        LogWarnLine(line.str());
+    }
+
+    return true;
+}
+
+std::string BuildSavedLocationsJsonValue(const std::vector<SavedLocation>& locations)
+{
+    if (locations.empty())
+    {
+        return "[]";
+    }
+
+    std::stringstream value;
+    value << "[";
+
+    for (size_t index = 0; index < locations.size(); ++index)
+    {
+        const SavedLocation& location = locations[index];
+        if (index == 0u)
+        {
+            value << "\n";
+        }
+
+        value << "    {\n"
+              << "      \"id\": \"" << EscapeJsonStringValue(location.id) << "\",\n"
+              << "      \"name\": \"" << EscapeJsonStringValue(location.name) << "\",\n"
+              << "      \"x\": " << location.position.x << ",\n"
+              << "      \"y\": " << location.position.y << ",\n"
+              << "      \"z\": " << location.position.z << ",\n"
+              << "      \"pinned\": " << (location.pinned ? "true" : "false") << ",\n"
+              << "      \"last_used_utc\": " << location.lastUsedUtc << "\n"
+              << "    }";
+
+        if (index + 1u < locations.size())
+        {
+            value << ",";
+        }
+        value << "\n";
+    }
+
+    value << "  ]";
+    return value.str();
+}
+
+bool TryPersistSavedLocationsConfig(const std::vector<SavedLocation>& locations, std::string* outError)
+{
+    std::string configPath;
+    if (!TryResolveModConfigPath(&configPath))
+    {
+        if (outError)
+        {
+            *outError = "config_path_unavailable";
+        }
+        return false;
+    }
+
+    std::string configText;
+    if (!TryReadTextFile(configPath, &configText))
+    {
+        if (outError)
+        {
+            *outError = "config_read_failed";
+        }
+        return false;
+    }
+
+    if (!TryUpsertJsonRawValueByKey(&configText, kSavedLocationsConfigKey, BuildSavedLocationsJsonValue(locations)))
+    {
+        if (outError)
+        {
+            *outError = "config_key_missing";
+        }
+        return false;
+    }
+
+    if (!TryWriteTextFile(configPath, configText))
+    {
+        if (outError)
+        {
+            *outError = "config_write_failed";
+        }
+        return false;
+    }
+
+    return true;
+}
+
 void CopyModHubErrorMessage(char* err_buf, uint32_t err_buf_size, const char* message)
 {
     if (!err_buf || err_buf_size == 0u)
@@ -2640,6 +3283,151 @@ void UpdatePanelTabButtonCaptions()
     }
 }
 
+std::string BuildSavedLocationListItemLabel(const SavedLocation& location)
+{
+    if (location.pinned)
+    {
+        return std::string("[Pinned] ") + location.name;
+    }
+
+    return location.name;
+}
+
+void RefreshSavedLocationsListWidget()
+{
+    if (!g_savedLocationsList)
+    {
+        return;
+    }
+
+    g_savedLocationsList->removeAllItems();
+    g_savedLocationsList->clearIndexSelected();
+
+    if (g_savedLocations.empty())
+    {
+        g_savedLocationsList->addItem("No saved locations yet");
+        g_savedLocationsList->setEnabled(false);
+        return;
+    }
+
+    g_savedLocationsList->setEnabled(true);
+    for (size_t index = 0; index < g_savedLocations.size(); ++index)
+    {
+        g_savedLocationsList->addItem(BuildSavedLocationListItemLabel(g_savedLocations[index]));
+    }
+}
+
+bool HasPrimarySelectedCharacter(PlayerInterface* player)
+{
+    if (!player)
+    {
+        return false;
+    }
+
+    __try
+    {
+        return player->selectedCharacter.isValid() && player->selectedCharacter.getCharacter() != 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+Character* TryGetPrimarySelectedCharacter(PlayerInterface* player)
+{
+    if (!player)
+    {
+        return 0;
+    }
+
+    __try
+    {
+        if (player->selectedCharacter.isValid())
+        {
+            return player->selectedCharacter.getCharacter();
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+
+    return 0;
+}
+
+bool TryGetCharacterPosition(Character* character, Ogre::Vector3* outPosition)
+{
+    if (!character || !outPosition)
+    {
+        return false;
+    }
+
+    __try
+    {
+        *outPosition = character->getPosition();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+std::string NormalizeSavedLocationName(const std::string& name)
+{
+    return ToUpperAscii(TrimAscii(name));
+}
+
+bool DoesSavedLocationNameExist(const std::vector<SavedLocation>& locations, const std::string& candidateName)
+{
+    const std::string normalizedCandidate = NormalizeSavedLocationName(candidateName);
+    if (normalizedCandidate.empty())
+    {
+        return false;
+    }
+
+    for (size_t index = 0; index < locations.size(); ++index)
+    {
+        if (NormalizeSavedLocationName(locations[index].name) == normalizedCandidate)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool DoesSavedLocationIdExist(const std::vector<SavedLocation>& locations, const std::string& candidateId)
+{
+    for (size_t index = 0; index < locations.size(); ++index)
+    {
+        if (locations[index].id == candidateId)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string BuildNextSavedLocationId(const std::vector<SavedLocation>& locations)
+{
+    unsigned int nextNumber = static_cast<unsigned int>(locations.size() + 1u);
+    std::string candidateId;
+    do
+    {
+        std::stringstream stream;
+        stream << "saved_location_" << nextNumber;
+        candidateId = stream.str();
+        ++nextNumber;
+    }
+    while (DoesSavedLocationIdExist(locations, candidateId));
+
+    return candidateId;
+}
+
 void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
 {
     const bool healthVisible = bodyVisible && g_activePanelTab == PanelTab_Health;
@@ -2673,6 +3461,11 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
 
     SetWidgetVisible(g_teleportSectionText, teleportVisible);
     SetWidgetVisible(g_teleportSelectedToCameraButton, teleportVisible);
+    SetWidgetVisible(g_saveLocationNameLabelText, teleportVisible);
+    SetWidgetVisible(g_saveLocationNameEdit, teleportVisible);
+    SetWidgetVisible(g_saveSelectedLocationButton, teleportVisible);
+    SetWidgetVisible(g_savedLocationsSectionText, teleportVisible);
+    SetWidgetVisible(g_savedLocationsList, teleportVisible);
 
     SetWidgetVisible(g_inventorySectionText, false);
     SetWidgetVisible(g_moneyAmountLabelText, inventoryVisible);
@@ -2879,7 +3672,7 @@ int GetActivePanelContentBottomInBodyCoords()
     switch (g_activePanelTab)
     {
     case PanelTab_Teleport:
-        return GetWidgetBottom(g_teleportSelectedToCameraButton, 258 - bodyTop);
+        return GetWidgetBottom(g_savedLocationsList, 534 - bodyTop);
     case PanelTab_Inventory:
         return GetWidgetBottom(g_spawnItemButton, 608 - bodyTop);
     case PanelTab_Health:
@@ -3325,6 +4118,11 @@ void ResetPanelWidgetPointers()
     g_damageRightLegButton = 0;
     g_teleportSectionText = 0;
     g_teleportSelectedToCameraButton = 0;
+    g_saveLocationNameLabelText = 0;
+    g_saveLocationNameEdit = 0;
+    g_saveSelectedLocationButton = 0;
+    g_savedLocationsSectionText = 0;
+    g_savedLocationsList = 0;
     g_inventorySectionText = 0;
     g_moneyAmountLabelText = 0;
     g_moneyAmountEdit = 0;
@@ -3438,6 +4236,7 @@ void LoadConfig()
     g_panelCollapseButtonSize = kPanelCollapseButtonSizeDefault;
     g_panelCloseButtonSize = kPanelCloseButtonSizeDefault;
     g_panelBodyOverlap = kPanelBodyOverlapDefault;
+    g_savedLocations.clear();
 
     std::string configPath;
     if (!TryResolveModConfigPath(&configPath))
@@ -3536,9 +4335,39 @@ void LoadConfig()
         g_loggingLevel = LoggingLevel_Debug;
     }
 
+    std::string::size_type savedLocationsValuePos = 0;
+    if (TryFindJsonValueStartByKey(configText, kSavedLocationsConfigKey, &savedLocationsValuePos))
+    {
+        if (!TryParseSavedLocationsByKey(configText, kSavedLocationsConfigKey, &g_savedLocations))
+        {
+            LogWarnLine("saved locations load skipped: invalid saved_locations array");
+            g_savedLocations.clear();
+        }
+    }
+    else
+    {
+        const std::string savedLocationsValue = BuildSavedLocationsJsonValue(g_savedLocations);
+        if (TryUpsertJsonRawValueByKey(&configText, kSavedLocationsConfigKey, savedLocationsValue))
+        {
+            if (TryWriteTextFile(configPath, configText))
+            {
+                LogInfoLine("saved locations config initialized entries=0");
+            }
+            else
+            {
+                LogWarnLine("saved locations config initialization failed: could not write config");
+            }
+        }
+        else
+        {
+            LogWarnLine("saved locations config initialization failed: could not upsert saved_locations");
+        }
+    }
+
     NormalizePanelHeightSettings();
     NormalizePanelVisualSettings();
     RefreshHotkeyBinding();
+    RefreshSavedLocationsListWidget();
 
     std::stringstream info;
     info << "mod config loaded enabled=" << (g_pluginEnabled ? "true" : "false")
@@ -3552,7 +4381,8 @@ void LoadConfig()
          << " title_font_height=" << g_panelHeaderTitleFontHeight
          << " collapse_button_size=" << g_panelCollapseButtonSize
          << " close_button_size=" << g_panelCloseButtonSize
-         << " body_overlap=" << g_panelBodyOverlap;
+         << " body_overlap=" << g_panelBodyOverlap
+         << " saved_locations=" << g_savedLocations.size();
     LogInfoLine(info.str());
 }
 
@@ -4790,6 +5620,11 @@ void SetSelectionActionButtonsEnabled(bool enabled)
     {
         g_teleportSelectedToCameraButton->setEnabled(enabled);
     }
+
+    if (g_saveSelectedLocationButton)
+    {
+        g_saveSelectedLocationButton->setEnabled(enabled);
+    }
 }
 
 int GetSelectedCharacterCount(PlayerInterface* player)
@@ -4828,7 +5663,13 @@ int GetSelectedCharacterCount(PlayerInterface* player)
 
 void UpdateSelectionActionButtons(PlayerInterface* player)
 {
-    SetSelectionActionButtonsEnabled(GetSelectedCharacterCount(player) > 0);
+    const bool hasSelectedCharacters = GetSelectedCharacterCount(player) > 0;
+    SetSelectionActionButtonsEnabled(hasSelectedCharacters);
+
+    if (g_saveSelectedLocationButton)
+    {
+        g_saveSelectedLocationButton->setEnabled(HasPrimarySelectedCharacter(player));
+    }
 }
 
 void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)
@@ -6713,6 +7554,126 @@ void OnTeleportSelectedToCameraButtonPressed(MyGUI::Widget*, int, int, MyGUI::Mo
     }
 }
 
+void OnSaveLocationNameTextChanged(MyGUI::EditBox*)
+{
+    UpdateSelectionActionButtons(g_lastPlayerInterface);
+}
+
+void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*)
+{
+    const char* actionId = "save_selected_location";
+    LogActionRequested(actionId);
+
+    if (!g_saveLocationNameEdit)
+    {
+        LogInfoLine("event=testkit_action_result action=\"save_selected_location\" success=false reason=\"missing_input_widget\"");
+        SetStatusMessage("Save Selected Location failed - name input unavailable");
+        return;
+    }
+
+    const std::string locationName = TrimAscii(g_saveLocationNameEdit->getOnlyText().asUTF8());
+    if (locationName.empty())
+    {
+        LogInfoLine("event=testkit_action_result action=\"save_selected_location\" success=false reason=\"empty_name\"");
+        SetStatusMessage("Save Selected Location failed - enter a location name");
+        return;
+    }
+
+    g_saveLocationNameEdit->setOnlyText(locationName);
+
+    if (DoesSavedLocationNameExist(g_savedLocations, locationName))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"save_selected_location\" success=false reason=\"duplicate_name\""
+               << " location_name=\"" << SanitizeLogValue(locationName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Save Selected Location failed - name already exists");
+        return;
+    }
+
+    if (!g_lastPlayerInterface)
+    {
+        LogInfoLine("event=testkit_action_result action=\"save_selected_location\" success=false reason=\"no_player_interface\"");
+        SetStatusMessage("Save Selected Location failed - player interface unavailable");
+        return;
+    }
+
+    Character* selectedCharacter = TryGetPrimarySelectedCharacter(g_lastPlayerInterface);
+    if (!selectedCharacter)
+    {
+        LogInfoLine("event=testkit_action_result action=\"save_selected_location\" success=false reason=\"no_selected_character\"");
+        SetStatusMessage("No selected character to save location from");
+        return;
+    }
+
+    Ogre::Vector3 selectedPosition(0.0f, 0.0f, 0.0f);
+    if (!TryGetCharacterPosition(selectedCharacter, &selectedPosition))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"save_selected_location\" success=false reason=\"position_read_failed\""
+               << " location_name=\"" << SanitizeLogValue(locationName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Save Selected Location failed - selected character position unavailable");
+        return;
+    }
+    const std::string targetName = SafeCharacterName(selectedCharacter);
+
+    std::vector<SavedLocation> updatedLocations = g_savedLocations;
+    SavedLocation location;
+    location.id = BuildNextSavedLocationId(updatedLocations);
+    location.name = locationName;
+    location.position = selectedPosition;
+    updatedLocations.push_back(location);
+    SortSavedLocationsForDisplay(&updatedLocations);
+
+    std::string persistError;
+    if (!TryPersistSavedLocationsConfig(updatedLocations, &persistError))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"save_selected_location\" success=false reason=\""
+               << persistError << "\""
+               << " location_name=\"" << SanitizeLogValue(locationName) << "\""
+               << " target_name=\"" << SanitizeLogValue(targetName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Save Selected Location failed - could not persist config");
+        return;
+    }
+
+    g_savedLocations.swap(updatedLocations);
+    RefreshSavedLocationsListWidget();
+    g_saveLocationNameEdit->setOnlyText("");
+    UpdateSelectionActionButtons(g_lastPlayerInterface);
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"save_selected_location\" success=true"
+           << " location_id=\"" << SanitizeLogValue(location.id) << "\""
+           << " location_name=\"" << SanitizeLogValue(location.name) << "\""
+           << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+           << " x=" << location.position.x
+           << " y=" << location.position.y
+           << " z=" << location.position.z
+           << " saved_count=" << g_savedLocations.size();
+    LogInfoLine(result.str());
+
+    SetStatusMessage(std::string("Saved location ") + location.name + " from " + targetName);
+}
+
+void OnSaveSelectedLocationButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnSaveSelectedLocationButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void SetActivePanelTab(PanelTab tab)
 {
     if (g_activePanelTab == tab)
@@ -7035,6 +7996,7 @@ void ApplySectionHeaderFonts()
         g_statesSectionText,
         g_limbDamageSectionText,
         g_teleportSectionText,
+        g_savedLocationsSectionText,
         g_inventorySectionText,
         g_spawnFoodSectionText,
         g_dangerousSectionText
@@ -7160,6 +8122,11 @@ bool HasAllPanelWidgets()
         && g_damageRightLegButton
         && g_teleportSectionText
         && g_teleportSelectedToCameraButton
+        && g_saveLocationNameLabelText
+        && g_saveLocationNameEdit
+        && g_saveSelectedLocationButton
+        && g_savedLocationsSectionText
+        && g_savedLocationsList
         && g_inventorySectionText
         && g_moneyAmountLabelText
         && g_moneyAmountEdit
@@ -7214,6 +8181,8 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_statesSectionText);
     ConfigureTextWidget(g_limbDamageSectionText);
     ConfigureTextWidget(g_teleportSectionText);
+    ConfigureTextWidget(g_saveLocationNameLabelText);
+    ConfigureTextWidget(g_savedLocationsSectionText);
     ConfigureTextWidget(g_inventorySectionText);
     ConfigureTextWidget(g_moneyAmountLabelText);
     ConfigureTextWidget(g_spawnFoodSectionText);
@@ -7224,11 +8193,13 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_dangerousSectionText);
     ConfigureTextWidget(g_statusText);
     ApplySectionHeaderFonts();
+    ConfigureEditBoxWidget(g_saveLocationNameEdit);
     ConfigureEditBoxWidget(g_moneyAmountEdit);
     ConfigureEditBoxWidget(g_itemSearchEdit);
     ConfigureEditBoxWidget(g_itemQuantityEdit);
     ConfigureComboBoxWidget(g_itemCategoryDropdown);
     ConfigureComboBoxWidget(g_itemDropdown);
+    ConfigureListBoxWidget(g_savedLocationsList);
     ConfigureListBoxWidget(g_itemSearchResultsList);
 
     g_targetSectionText->setCaption("Target");
@@ -7242,6 +8213,8 @@ void InitializePanelWidgets()
     g_statesSectionText->setCaption("States");
     g_limbDamageSectionText->setCaption("Limb Damage");
     g_teleportSectionText->setCaption("Teleport");
+    g_saveLocationNameLabelText->setCaption("Location Name");
+    g_savedLocationsSectionText->setCaption("Saved Locations");
     g_inventorySectionText->setCaption("");
     g_moneyAmountLabelText->setCaption("Cats To Add");
     g_spawnFoodSectionText->setCaption("Spawn Items");
@@ -7259,6 +8232,11 @@ void InitializePanelWidgets()
     g_damageLeftLegButton->setCaption("Damage Left Leg");
     g_damageRightLegButton->setCaption("Damage Right Leg");
     g_teleportSelectedToCameraButton->setCaption(std::string("Teleport Selected To ") + kTeleportDestinationLabel);
+    g_saveLocationNameEdit->setEditStatic(false);
+    g_saveLocationNameEdit->setMaxTextLength(64);
+    g_saveLocationNameEdit->setOnlyText("");
+    g_saveSelectedLocationButton->setCaption("Save Selected Location");
+    RefreshSavedLocationsListWidget();
     g_moneyAmountEdit->setEditStatic(false);
     g_moneyAmountEdit->setMaxTextLength(10);
     g_moneyAmountEdit->setOnlyText("1000");
@@ -7300,6 +8278,8 @@ void InitializePanelWidgets()
     g_damageLeftLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftLegButtonPressed);
     g_damageRightLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightLegButtonPressed);
     g_teleportSelectedToCameraButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportSelectedToCameraButtonPressed);
+    g_saveLocationNameEdit->eventEditTextChange += MyGUI::newDelegate(&OnSaveLocationNameTextChanged);
+    g_saveSelectedLocationButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSaveSelectedLocationButtonPressed);
     g_addMoneyButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnAddMoneyButtonPressed);
     g_itemCategoryDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnInventoryCategoryChanged);
     g_itemSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnInventoryItemSearchTextChanged);
@@ -7494,6 +8474,26 @@ void CreatePanelWidgets()
     g_teleportSelectedToCameraButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
         BuildBodyCoord(20, 230, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_saveLocationNameLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 266, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_saveLocationNameEdit = bodyParent->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        BuildBodyCoord(20, 288, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_saveSelectedLocationButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 322, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_savedLocationsSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 360, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_savedLocationsList = bodyParent->createWidget<MyGUI::ListBox>(
+        "Kenshi_ListBox",
+        BuildBodyCoord(20, 384, kPanelWidth - 40, 150),
         MyGUI::Align::Default);
     g_inventorySectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",

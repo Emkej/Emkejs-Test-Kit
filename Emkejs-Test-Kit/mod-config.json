@@ -7,5 +7,6 @@
   "start_hidden": false,
   "start_collapsed": false,
   "logging_level": "info",
-  "confirm_dangerous_actions": true
+  "confirm_dangerous_actions": true,
+  "saved_locations": []
 }
