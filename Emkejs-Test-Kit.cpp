@@ -11,6 +11,7 @@
 #include <kenshi/GameWorld.h>
 #include <kenshi/Globals.h>
 #include <kenshi/Inventory.h>
+#include <kenshi/InputHandler.h>
 #include <kenshi/Item.h>
 #include <kenshi/Kenshi.h>
 #include <kenshi/MedicalSystem.h>
@@ -26,6 +27,7 @@
 #include <mygui/MyGUI_InputManager.h>
 #include <mygui/MyGUI_ListBox.h>
 #include <mygui/MyGUI_RenderManager.h>
+#include <mygui/MyGUI_ScrollView.h>
 #include <mygui/MyGUI_TextBox.h>
 #include <mygui/MyGUI_Widget.h>
 #include <ois/OISKeyboard.h>
@@ -45,14 +47,37 @@ namespace
 {
 const char* kPluginName = "Emkejs-Test-Kit";
 const char* kConfigFileName = "mod-config.json";
+const char* kDeveloperModeConfigKey = "developer_mode";
 const char* kDefaultTogglePanelKey = "D";
 const int kPanelLeft = 18;
 const int kPanelTop = 140;
 const int kPanelWidth = 360;
 const int kPanelExpandedHeight = 708;
+const int kPanelMinExpandedHeightDefault = 320;
+const int kPanelExpandedHeightLowerBound = 260;
+const int kPanelExpandedHeightUpperBound = 920;
 const int kPanelCollapsedHeight = 42;
 const int kPanelViewportPadding = 16;
 const int kPanelDragThreshold = 3;
+const int kPanelHeaderHeight = 38;
+const int kPanelBodyOverlapDefault = 6;
+const int kPanelBodyOverlapLowerBound = 0;
+const int kPanelBodyOverlapUpperBound = 8;
+const int kPanelBodyScrollPadding = 20;
+const int kPanelBodyBottomPadding = 18;
+const int kPanelStatusGap = 20;
+const int kPanelEdgeSnapDistance = 12;
+const int kPanelMinimumVisibleWidth = 48;
+const int kPanelMinimumVisibleHeight = 42;
+const int kPanelHeaderTitleFontHeightDefault = 24;
+const int kPanelHeaderTitleFontHeightLowerBound = 14;
+const int kPanelHeaderTitleFontHeightUpperBound = 30;
+const int kPanelCollapseButtonSizeDefault = 28;
+const int kPanelCloseButtonSizeDefault = 28;
+const int kPanelHeaderButtonSizeLowerBound = 18;
+const int kPanelHeaderButtonSizeUpperBound = 32;
+const int kPanelHeaderButtonGap = 6;
+const int kPanelHeaderButtonRightPadding = 10;
 const DWORD kDangerArmTimeoutMs = 3000;
 const float kForceUnconsciousDurationSeconds = 30.0f;
 const float kForceDyingBloodOffset = 8.0f;
@@ -78,6 +103,24 @@ const char* kModHubTogglePanelShiftLabel = "Require Shift";
 const char* kModHubTogglePanelShiftDescription = "Require Shift for the debug panel hotkey.";
 const char* kModHubTogglePanelAltLabel = "Require Alt";
 const char* kModHubTogglePanelAltDescription = "Require Alt for the debug panel hotkey.";
+const char* kModHubPanelMinHeightLabel = "Min Panel Height";
+const char* kModHubPanelMinHeightDescription =
+    "Minimum expanded height for the debug panel. Smaller active tabs still keep at least this height.";
+const char* kModHubPanelMaxHeightLabel = "Max Panel Height";
+const char* kModHubPanelMaxHeightDescription =
+    "Maximum expanded height for the debug panel. Taller tab content scrolls inside the panel.";
+const char* kModHubPanelHeaderTitleFontHeightLabel = "Header Title Size";
+const char* kModHubPanelHeaderTitleFontHeightDescription =
+    "Snaps the debug panel title to the nearest native Kenshi painted font size to keep it crisp.";
+const char* kModHubPanelCollapseButtonSizeLabel = "Collapse Button Size";
+const char* kModHubPanelCollapseButtonSizeDescription =
+    "Square size for the header collapse button.";
+const char* kModHubPanelCloseButtonSizeLabel = "Close Button Size";
+const char* kModHubPanelCloseButtonSizeDescription =
+    "Square size for the header close button.";
+const char* kModHubPanelBodyOverlapLabel = "Header Body Overlap";
+const char* kModHubPanelBodyOverlapDescription =
+    "How many pixels the panel body tucks under the header to hide the seam.";
 const char* const kInventorySpawnGeneralKeywords[] = {
     "BUILDING MATERIAL",
     "IRON PLATE",
@@ -218,8 +261,92 @@ struct InventorySpawnOption
     GameData* itemData;
 };
 
+typedef unsigned int InventorySearchCodepoint;
+typedef std::vector<InventorySearchCodepoint> InventorySearchText;
+
+enum InventorySearchShortcutKind
+{
+    InventorySearchShortcutKind_None = 0,
+    InventorySearchShortcutKind_CtrlLeft,
+    InventorySearchShortcutKind_CtrlRight,
+    InventorySearchShortcutKind_CtrlBackspace
+};
+
+struct InventorySearchSelection
+{
+    InventorySearchSelection()
+        : active(false)
+        , start(0u)
+        , length(0u)
+    {
+    }
+
+    InventorySearchSelection(bool activeValue, std::size_t startValue, std::size_t lengthValue)
+        : active(activeValue)
+        , start(startValue)
+        , length(lengthValue)
+    {
+    }
+
+    bool active;
+    std::size_t start;
+    std::size_t length;
+};
+
+struct InventorySearchSnapshot
+{
+    InventorySearchSnapshot()
+        : cursor(0u)
+    {
+    }
+
+    InventorySearchSnapshot(
+        const InventorySearchText& textValue,
+        std::size_t cursorValue,
+        const InventorySearchSelection& selectionValue)
+        : text(textValue)
+        , cursor(cursorValue)
+        , selection(selectionValue)
+    {
+    }
+
+    InventorySearchText text;
+    std::size_t cursor;
+    InventorySearchSelection selection;
+};
+
+struct InventorySearchEditResult
+{
+    InventorySearchEditResult()
+        : handled(false)
+        , rewriteText(false)
+        , cursor(0u)
+    {
+    }
+
+    bool handled;
+    bool rewriteText;
+    InventorySearchText text;
+    std::size_t cursor;
+    InventorySearchSelection selection;
+};
+
+struct PendingInventorySearchShortcut
+{
+    PendingInventorySearchShortcut()
+        : active(false)
+        , keyValue(0)
+    {
+    }
+
+    bool active;
+    int keyValue;
+    InventorySearchEditResult editResult;
+};
+
 std::string g_configPath;
 bool g_pluginEnabled = true;
+bool g_developerMode = false;
 LoggingLevel g_loggingLevel = LoggingLevel_Info;
 bool g_togglePanelRequireCtrl = true;
 bool g_togglePanelRequireShift = true;
@@ -229,11 +356,18 @@ bool g_hotkeyEnabled = true;
 int g_hotkeyVirtualKey = 'D';
 std::string g_hotkeyDisplay = "CTRL+SHIFT+D";
 bool g_hotkeyPrevDown = false;
+bool g_inventorySearchCtrlFPrevDown = false;
 emc::ModHubClient g_modHubClient;
 bool g_modHubClientConfigured = false;
 bool g_confirmDangerousActions = true;
 bool g_panelHidden = false;
 bool g_panelCollapsed = false;
+int g_panelMinExpandedHeight = kPanelMinExpandedHeightDefault;
+int g_panelMaxExpandedHeight = kPanelExpandedHeight;
+int g_panelHeaderTitleFontHeight = kPanelHeaderTitleFontHeightDefault;
+int g_panelCollapseButtonSize = kPanelCollapseButtonSizeDefault;
+int g_panelCloseButtonSize = kPanelCloseButtonSizeDefault;
+int g_panelBodyOverlap = kPanelBodyOverlapDefault;
 bool g_runtimePanelPositionSet = false;
 int g_runtimePanelLeft = kPanelLeft;
 int g_runtimePanelTop = kPanelTop;
@@ -253,10 +387,13 @@ PlayerInterface* g_lastPlayerInterface = 0;
 bool g_loggedPanelCreateFailure = false;
 
 MyGUI::Widget* g_panel = 0;
-MyGUI::Button* g_headerFrame = 0;
+MyGUI::Button* g_headerBackground = 0;
+MyGUI::Widget* g_headerFrame = 0;
 MyGUI::TextBox* g_headerTitleText = 0;
 MyGUI::Button* g_collapseButton = 0;
+MyGUI::Button* g_closeButton = 0;
 MyGUI::Button* g_bodyFrame = 0;
+MyGUI::ScrollView* g_bodyScrollView = 0;
 MyGUI::TextBox* g_targetSectionText = 0;
 MyGUI::TextBox* g_targetNameText = 0;
 MyGUI::TextBox* g_targetFactionText = 0;
@@ -300,10 +437,17 @@ MyGUI::TextBox* g_statusText = 0;
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
 bool g_inventoryFoodItemOptionsLoaded = false;
+PendingInventorySearchShortcut g_pendingInventorySearchShortcut;
+bool g_haveInventorySearchEditSnapshot = false;
+InventorySearchSnapshot g_inventorySearchEditSnapshot;
 
 void (*PlayerInterface_updateUT_orig)(PlayerInterface*) = 0;
 void (*SaveManager_loadByInfo_orig)(SaveManager*, const SaveInfo&, bool) = 0;
 void (*SaveManager_loadByName_orig)(SaveManager*, const std::string&) = 0;
+
+const char* ResolvePanelHeaderTitleFontName(int fontHeight);
+void ApplyPanelHeaderTitleFont();
+void SetActivePanelTab(PanelTab tab);
 
 bool IsSupportedVersion(KenshiLib::BinaryVersion& versionInfo)
 {
@@ -833,6 +977,360 @@ bool TryPopulateInventoryFoodSelection(size_t optionIndex)
     return false;
 }
 
+void ResetPendingInventorySearchShortcut()
+{
+    g_pendingInventorySearchShortcut = PendingInventorySearchShortcut();
+}
+
+void ResetInventorySearchEditSnapshot()
+{
+    g_haveInventorySearchEditSnapshot = false;
+    g_inventorySearchEditSnapshot = InventorySearchSnapshot();
+}
+
+std::size_t ClampInventorySearchCursor(std::size_t cursor, std::size_t textLength)
+{
+    return cursor > textLength ? textLength : cursor;
+}
+
+InventorySearchSelection NormalizeInventorySearchSelection(
+    const InventorySearchSelection& selection,
+    std::size_t textLength)
+{
+    if (!selection.active || selection.length == 0u)
+    {
+        return InventorySearchSelection(false, ClampInventorySearchCursor(selection.start, textLength), 0u);
+    }
+
+    const std::size_t start = ClampInventorySearchCursor(selection.start, textLength);
+    const std::size_t maxLength = textLength - start;
+    const std::size_t length = selection.length > maxLength ? maxLength : selection.length;
+    if (length == 0u)
+    {
+        return InventorySearchSelection(false, start, 0u);
+    }
+
+    return InventorySearchSelection(true, start, length);
+}
+
+bool IsInventorySearchTokenSeparator(InventorySearchCodepoint value)
+{
+    if (value < 0x80u)
+    {
+        const unsigned char byte = static_cast<unsigned char>(value);
+        return byte == ':' || std::isspace(byte) != 0 || std::isalnum(byte) == 0;
+    }
+
+    return false;
+}
+
+std::size_t FindPreviousInventorySearchTokenBoundary(const InventorySearchText& text, std::size_t cursor)
+{
+    std::size_t position = ClampInventorySearchCursor(cursor, text.size());
+
+    while (position > 0u && IsInventorySearchTokenSeparator(text[position - 1u]))
+    {
+        --position;
+    }
+
+    while (position > 0u && !IsInventorySearchTokenSeparator(text[position - 1u]))
+    {
+        --position;
+    }
+
+    return position;
+}
+
+std::size_t FindNextInventorySearchTokenBoundary(const InventorySearchText& text, std::size_t cursor)
+{
+    const std::size_t length = text.size();
+    std::size_t position = ClampInventorySearchCursor(cursor, length);
+
+    while (position < length && !IsInventorySearchTokenSeparator(text[position]))
+    {
+        ++position;
+    }
+
+    while (position < length && IsInventorySearchTokenSeparator(text[position]))
+    {
+        ++position;
+    }
+
+    return position;
+}
+
+InventorySearchEditResult ApplyInventorySearchShortcut(
+    InventorySearchShortcutKind shortcut,
+    const InventorySearchSnapshot& snapshot)
+{
+    InventorySearchEditResult result;
+
+    if (shortcut == InventorySearchShortcutKind_None)
+    {
+        return result;
+    }
+
+    const std::size_t textLength = snapshot.text.size();
+    const std::size_t cursor = ClampInventorySearchCursor(snapshot.cursor, textLength);
+    const InventorySearchSelection selection =
+        NormalizeInventorySearchSelection(snapshot.selection, textLength);
+
+    result.handled = true;
+    result.text = snapshot.text;
+    result.cursor = cursor;
+    result.selection = InventorySearchSelection(false, cursor, 0u);
+
+    if (shortcut == InventorySearchShortcutKind_CtrlLeft)
+    {
+        result.cursor = FindPreviousInventorySearchTokenBoundary(snapshot.text, cursor);
+        result.selection = InventorySearchSelection(false, result.cursor, 0u);
+        return result;
+    }
+
+    if (shortcut == InventorySearchShortcutKind_CtrlRight)
+    {
+        result.cursor = FindNextInventorySearchTokenBoundary(snapshot.text, cursor);
+        result.selection = InventorySearchSelection(false, result.cursor, 0u);
+        return result;
+    }
+
+    if (selection.active)
+    {
+        result.rewriteText = true;
+        result.text.erase(
+            result.text.begin() + selection.start,
+            result.text.begin() + selection.start + selection.length);
+        result.cursor = selection.start;
+        result.selection = InventorySearchSelection(false, result.cursor, 0u);
+        return result;
+    }
+
+    result.rewriteText = true;
+    const std::size_t deleteStart = FindPreviousInventorySearchTokenBoundary(snapshot.text, cursor);
+    if (deleteStart != cursor)
+    {
+        result.text.erase(result.text.begin() + deleteStart, result.text.begin() + cursor);
+    }
+    result.cursor = deleteStart;
+    result.selection = InventorySearchSelection(false, result.cursor, 0u);
+    return result;
+}
+
+bool IsInterestingInventorySearchMyGuiKey(MyGUI::KeyCode keyCode)
+{
+    const int value = keyCode.getValue();
+    return value == MyGUI::KeyCode::LeftControl
+        || value == MyGUI::KeyCode::RightControl
+        || value == MyGUI::KeyCode::ArrowLeft
+        || value == MyGUI::KeyCode::ArrowRight
+        || value == MyGUI::KeyCode::Backspace;
+}
+
+InventorySearchText ToInventorySearchInputText(const MyGUI::UString& text)
+{
+    InventorySearchText result;
+    const std::size_t length = text.size();
+    result.reserve(length);
+    for (std::size_t index = 0; index < length; ++index)
+    {
+        result.push_back(static_cast<InventorySearchCodepoint>(text[index]));
+    }
+    return result;
+}
+
+MyGUI::UString ToInventorySearchMyGuiText(const InventorySearchText& text)
+{
+    MyGUI::UString result;
+    const std::size_t length = text.size();
+    for (std::size_t index = 0; index < length; ++index)
+    {
+        result.push_back(static_cast<MyGUI::UString::unicode_char>(text[index]));
+    }
+    return result;
+}
+
+InventorySearchSelection CaptureInventorySearchEditSelection(
+    MyGUI::EditBox* searchEdit,
+    std::size_t textLength)
+{
+    if (!searchEdit || !searchEdit->isTextSelection())
+    {
+        return InventorySearchSelection();
+    }
+
+    const std::size_t selectionStart = searchEdit->getTextSelectionStart();
+    if (selectionStart == MyGUI::ITEM_NONE)
+    {
+        return InventorySearchSelection();
+    }
+
+    const std::size_t selectionLength = searchEdit->getTextSelectionLength();
+    return NormalizeInventorySearchSelection(
+        InventorySearchSelection(true, selectionStart, selectionLength),
+        textLength);
+}
+
+InventorySearchSnapshot BuildInventorySearchInputSnapshot(
+    const MyGUI::UString& text,
+    std::size_t cursorPosition,
+    const InventorySearchSelection& selection)
+{
+    return InventorySearchSnapshot(
+        ToInventorySearchInputText(text),
+        cursorPosition,
+        NormalizeInventorySearchSelection(selection, text.size()));
+}
+
+InventorySearchSnapshot CaptureInventorySearchEditSnapshot(MyGUI::EditBox* searchEdit)
+{
+    if (!searchEdit)
+    {
+        return InventorySearchSnapshot();
+    }
+
+    const MyGUI::UString text = searchEdit->getOnlyText();
+    const std::size_t textLength = text.size();
+    const std::size_t cursorPosition =
+        ClampInventorySearchCursor(searchEdit->getTextCursor(), textLength);
+    return BuildInventorySearchInputSnapshot(
+        text,
+        cursorPosition,
+        CaptureInventorySearchEditSelection(searchEdit, textLength));
+}
+
+void RememberInventorySearchEditSnapshot(MyGUI::EditBox* searchEdit)
+{
+    if (!searchEdit)
+    {
+        ResetInventorySearchEditSnapshot();
+        return;
+    }
+
+    g_haveInventorySearchEditSnapshot = true;
+    g_inventorySearchEditSnapshot = CaptureInventorySearchEditSnapshot(searchEdit);
+}
+
+InventorySearchShortcutKind ClassifyInventorySearchShortcut(MyGUI::KeyCode keyCode)
+{
+    const int keyValue = keyCode.getValue();
+    if (keyValue == MyGUI::KeyCode::ArrowLeft)
+    {
+        return InventorySearchShortcutKind_CtrlLeft;
+    }
+
+    if (keyValue == MyGUI::KeyCode::ArrowRight)
+    {
+        return InventorySearchShortcutKind_CtrlRight;
+    }
+
+    if (keyValue == MyGUI::KeyCode::Backspace)
+    {
+        return InventorySearchShortcutKind_CtrlBackspace;
+    }
+
+    return InventorySearchShortcutKind_None;
+}
+
+InventorySearchSnapshot BuildScheduledInventorySearchShortcutSnapshot(
+    MyGUI::EditBox* searchEdit,
+    InventorySearchShortcutKind shortcut)
+{
+    InventorySearchSnapshot snapshot = CaptureInventorySearchEditSnapshot(searchEdit);
+    if (shortcut == InventorySearchShortcutKind_CtrlBackspace && g_haveInventorySearchEditSnapshot)
+    {
+        snapshot.text = g_inventorySearchEditSnapshot.text;
+        snapshot.cursor =
+            ClampInventorySearchCursor(g_inventorySearchEditSnapshot.cursor, snapshot.text.size());
+        snapshot.selection = NormalizeInventorySearchSelection(snapshot.selection, snapshot.text.size());
+    }
+
+    return snapshot;
+}
+
+void ApplyInventorySearchEditSelection(
+    MyGUI::EditBox* searchEdit,
+    std::size_t cursorPosition,
+    const InventorySearchSelection& selection)
+{
+    if (!searchEdit)
+    {
+        return;
+    }
+
+    const std::size_t textLength = searchEdit->getTextLength();
+    const std::size_t clampedCursor = ClampInventorySearchCursor(cursorPosition, textLength);
+    const InventorySearchSelection normalizedSelection =
+        NormalizeInventorySearchSelection(selection, textLength);
+    if (normalizedSelection.active)
+    {
+        searchEdit->setTextSelection(
+            normalizedSelection.start,
+            normalizedSelection.start + normalizedSelection.length);
+        return;
+    }
+
+    searchEdit->setTextCursor(clampedCursor);
+    searchEdit->setTextSelection(clampedCursor, clampedCursor);
+}
+
+bool ScheduleInventorySearchMyGuiShortcut(MyGUI::EditBox* searchEdit, MyGUI::KeyCode keyCode)
+{
+    if (!searchEdit)
+    {
+        return false;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    if (!inputManager || !inputManager->isControlPressed())
+    {
+        return false;
+    }
+
+    const InventorySearchShortcutKind shortcut = ClassifyInventorySearchShortcut(keyCode);
+    if (shortcut == InventorySearchShortcutKind_None)
+    {
+        return false;
+    }
+
+    ResetPendingInventorySearchShortcut();
+    g_pendingInventorySearchShortcut.active = true;
+    g_pendingInventorySearchShortcut.keyValue = keyCode.getValue();
+    g_pendingInventorySearchShortcut.editResult = ApplyInventorySearchShortcut(
+        shortcut,
+        BuildScheduledInventorySearchShortcutSnapshot(searchEdit, shortcut));
+    if (!g_pendingInventorySearchShortcut.editResult.handled)
+    {
+        ResetPendingInventorySearchShortcut();
+        return false;
+    }
+
+    return true;
+}
+
+void ApplyPendingInventorySearchEditShortcut(MyGUI::EditBox* searchEdit, MyGUI::KeyCode keyCode)
+{
+    if (!g_pendingInventorySearchShortcut.active
+        || g_pendingInventorySearchShortcut.keyValue != keyCode.getValue())
+    {
+        return;
+    }
+
+    const PendingInventorySearchShortcut pending = g_pendingInventorySearchShortcut;
+    ResetPendingInventorySearchShortcut();
+
+    if (!searchEdit || !pending.editResult.handled)
+    {
+        return;
+    }
+
+    if (pending.editResult.rewriteText)
+    {
+        searchEdit->setOnlyText(ToInventorySearchMyGuiText(pending.editResult.text));
+    }
+
+    ApplyInventorySearchEditSelection(searchEdit, pending.editResult.cursor, pending.editResult.selection);
+}
+
 const char* TargetSourceToUiLabel(TargetSource source)
 {
     switch (source)
@@ -1123,6 +1621,154 @@ bool TryReplaceJsonStringByKey(std::string* content, const char* key, const std:
     const std::string replacement = std::string("\"") + EscapeJsonStringValue(value) + "\"";
     content->replace(valuePos, endPos - valuePos + 1, replacement);
     return true;
+}
+
+bool TryParseJsonIntByKey(const std::string& content, const char* key, int* outValue)
+{
+    if (!key || !outValue)
+    {
+        return false;
+    }
+
+    const std::string needle = std::string("\"") + key + "\"";
+    const std::string::size_type keyPos = content.find(needle);
+    if (keyPos == std::string::npos)
+    {
+        return false;
+    }
+
+    std::string::size_type valuePos = content.find(':', keyPos + needle.size());
+    if (valuePos == std::string::npos)
+    {
+        return false;
+    }
+
+    ++valuePos;
+    while (valuePos < content.size()
+        && std::isspace(static_cast<unsigned char>(content[valuePos])) != 0)
+    {
+        ++valuePos;
+    }
+
+    std::string::size_type endPos = valuePos;
+    if (endPos < content.size() && content[endPos] == '-')
+    {
+        ++endPos;
+    }
+    while (endPos < content.size()
+        && std::isdigit(static_cast<unsigned char>(content[endPos])) != 0)
+    {
+        ++endPos;
+    }
+
+    if (endPos == valuePos || (endPos == valuePos + 1 && content[valuePos] == '-'))
+    {
+        return false;
+    }
+
+    std::stringstream valueStream(content.substr(valuePos, endPos - valuePos));
+    int parsedValue = 0;
+    valueStream >> parsedValue;
+    if (!valueStream || !valueStream.eof())
+    {
+        return false;
+    }
+
+    *outValue = parsedValue;
+    return true;
+}
+
+bool TryReplaceJsonIntByKey(std::string* content, const char* key, int value)
+{
+    if (!content || !key)
+    {
+        return false;
+    }
+
+    const std::string needle = std::string("\"") + key + "\"";
+    const std::string::size_type keyPos = content->find(needle);
+    if (keyPos == std::string::npos)
+    {
+        return false;
+    }
+
+    std::string::size_type valuePos = content->find(':', keyPos + needle.size());
+    if (valuePos == std::string::npos)
+    {
+        return false;
+    }
+
+    ++valuePos;
+    while (valuePos < content->size()
+        && std::isspace(static_cast<unsigned char>((*content)[valuePos])) != 0)
+    {
+        ++valuePos;
+    }
+
+    std::string::size_type endPos = valuePos;
+    if (endPos < content->size() && (*content)[endPos] == '-')
+    {
+        ++endPos;
+    }
+    while (endPos < content->size()
+        && std::isdigit(static_cast<unsigned char>((*content)[endPos])) != 0)
+    {
+        ++endPos;
+    }
+
+    if (endPos == valuePos || (endPos == valuePos + 1 && (*content)[valuePos] == '-'))
+    {
+        return false;
+    }
+
+    std::stringstream replacement;
+    replacement << value;
+    content->replace(valuePos, endPos - valuePos, replacement.str());
+    return true;
+}
+
+bool TryInsertJsonIntByKey(std::string* content, const char* key, int value)
+{
+    if (!content || !key)
+    {
+        return false;
+    }
+
+    const std::string::size_type objectEnd = content->rfind('}');
+    if (objectEnd == std::string::npos)
+    {
+        return false;
+    }
+
+    std::string::size_type insertPos = objectEnd;
+    while (insertPos > 0
+        && std::isspace(static_cast<unsigned char>((*content)[insertPos - 1])) != 0)
+    {
+        --insertPos;
+    }
+
+    std::string::size_type previousPos = insertPos;
+    while (previousPos > 0
+        && std::isspace(static_cast<unsigned char>((*content)[previousPos - 1])) != 0)
+    {
+        --previousPos;
+    }
+
+    const bool needsComma = previousPos > 0 && (*content)[previousPos - 1] != '{';
+    std::stringstream insertion;
+    if (needsComma)
+    {
+        insertion << ",";
+    }
+    insertion << "\n  \"" << key << "\": " << value;
+
+    content->insert(insertPos, insertion.str());
+    return true;
+}
+
+bool TryUpsertJsonIntByKey(std::string* content, const char* key, int value)
+{
+    return TryReplaceJsonIntByKey(content, key, value) || TryInsertJsonIntByKey(content, key, value);
 }
 
 bool TryParseJsonStringByKey(const std::string& content, const char* key, std::string* outValue)
@@ -1649,7 +2295,22 @@ bool TrySaveTogglePanelHotkeyConfig(const char** outError)
     if (!TryReplaceJsonStringByKey(&configText, "toggle_panel_key", g_togglePanelKey)
         || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_ctrl", g_togglePanelRequireCtrl)
         || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_shift", g_togglePanelRequireShift)
-        || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_alt", g_togglePanelRequireAlt))
+        || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_alt", g_togglePanelRequireAlt)
+        || !TryUpsertJsonIntByKey(&configText, "panel_min_expanded_height", g_panelMinExpandedHeight)
+        || !TryUpsertJsonIntByKey(&configText, "panel_max_expanded_height", g_panelMaxExpandedHeight))
+    {
+        if (outError)
+        {
+            *outError = "config_key_missing";
+        }
+        return false;
+    }
+
+    if (g_developerMode
+        && (!TryUpsertJsonIntByKey(&configText, "panel_header_title_font_height", g_panelHeaderTitleFontHeight)
+            || !TryUpsertJsonIntByKey(&configText, "panel_collapse_button_size", g_panelCollapseButtonSize)
+            || !TryUpsertJsonIntByKey(&configText, "panel_close_button_size", g_panelCloseButtonSize)
+            || !TryUpsertJsonIntByKey(&configText, "panel_body_overlap", g_panelBodyOverlap)))
     {
         if (outError)
         {
@@ -1711,7 +2372,7 @@ void UpdateCollapseButtonCaption()
         return;
     }
 
-    g_collapseButton->setCaption(g_panelCollapsed ? "Expand" : "Collapse");
+    g_collapseButton->setCaption(g_panelCollapsed ? "+" : "-");
 }
 
 void SetWidgetVisible(MyGUI::Widget* widget, bool visible)
@@ -2013,7 +2674,7 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_teleportSectionText, teleportVisible);
     SetWidgetVisible(g_teleportSelectedToCameraButton, teleportVisible);
 
-    SetWidgetVisible(g_inventorySectionText, inventoryVisible);
+    SetWidgetVisible(g_inventorySectionText, false);
     SetWidgetVisible(g_moneyAmountLabelText, inventoryVisible);
     SetWidgetVisible(g_moneyAmountEdit, inventoryVisible);
     SetWidgetVisible(g_addMoneyButton, inventoryVisible);
@@ -2151,9 +2812,107 @@ int ClampIntValue(int value, int minValue, int maxValue)
     return value;
 }
 
+int ClampPanelHeightSettingValue(int value)
+{
+    return ClampIntValue(value, kPanelExpandedHeightLowerBound, kPanelExpandedHeightUpperBound);
+}
+
+int ClampPanelHeaderTitleFontHeightValue(int value)
+{
+    return ClampIntValue(value, kPanelHeaderTitleFontHeightLowerBound, kPanelHeaderTitleFontHeightUpperBound);
+}
+
+int ClampPanelHeaderButtonSizeValue(int value)
+{
+    return ClampIntValue(value, kPanelHeaderButtonSizeLowerBound, kPanelHeaderButtonSizeUpperBound);
+}
+
+int ClampPanelBodyOverlapValue(int value)
+{
+    return ClampIntValue(value, kPanelBodyOverlapLowerBound, kPanelBodyOverlapUpperBound);
+}
+
+void NormalizePanelHeightSettings()
+{
+    g_panelMinExpandedHeight = ClampPanelHeightSettingValue(g_panelMinExpandedHeight);
+    g_panelMaxExpandedHeight = ClampPanelHeightSettingValue(g_panelMaxExpandedHeight);
+    if (g_panelMinExpandedHeight > g_panelMaxExpandedHeight)
+    {
+        g_panelMaxExpandedHeight = g_panelMinExpandedHeight;
+    }
+}
+
+void NormalizePanelVisualSettings()
+{
+    g_panelHeaderTitleFontHeight = ClampPanelHeaderTitleFontHeightValue(g_panelHeaderTitleFontHeight);
+    g_panelCollapseButtonSize = ClampPanelHeaderButtonSizeValue(g_panelCollapseButtonSize);
+    g_panelCloseButtonSize = ClampPanelHeaderButtonSizeValue(g_panelCloseButtonSize);
+    g_panelBodyOverlap = ClampPanelBodyOverlapValue(g_panelBodyOverlap);
+}
+
+int GetPanelBodyTop()
+{
+    NormalizePanelVisualSettings();
+    return kPanelHeaderHeight - g_panelBodyOverlap;
+}
+
+MyGUI::IntCoord BuildBodyCoord(int left, int top, int width, int height)
+{
+    return MyGUI::IntCoord(left, top - GetPanelBodyTop(), width, height);
+}
+
+int GetWidgetBottom(MyGUI::Widget* widget, int fallbackBottom)
+{
+    if (!widget)
+    {
+        return fallbackBottom;
+    }
+
+    const MyGUI::IntCoord coord = widget->getCoord();
+    return coord.top + coord.height;
+}
+
+int GetActivePanelContentBottomInBodyCoords()
+{
+    const int bodyTop = GetPanelBodyTop();
+    int bottom = 198 - bodyTop;
+    switch (g_activePanelTab)
+    {
+    case PanelTab_Teleport:
+        return GetWidgetBottom(g_teleportSelectedToCameraButton, 258 - bodyTop);
+    case PanelTab_Inventory:
+        return GetWidgetBottom(g_spawnItemButton, 608 - bodyTop);
+    case PanelTab_Health:
+    default:
+        bottom = GetWidgetBottom(g_forceDyingButton, 478 - bodyTop);
+        break;
+    }
+
+    return bottom;
+}
+
+int GetStatusTopInPanelCoords()
+{
+    return GetPanelBodyTop() + GetActivePanelContentBottomInBodyCoords() + kPanelStatusGap;
+}
+
+int GetRequiredBodyContentHeight()
+{
+    const int bodyTop = GetPanelBodyTop();
+    return (GetStatusTopInPanelCoords() - bodyTop) + 18 + kPanelBodyBottomPadding;
+}
+
+int ResolveExpandedPanelHeight()
+{
+    NormalizePanelHeightSettings();
+    const int bodyTop = GetPanelBodyTop();
+    const int desiredHeight = bodyTop + kPanelBodyScrollPadding + GetRequiredBodyContentHeight();
+    return ClampIntValue(desiredHeight, g_panelMinExpandedHeight, g_panelMaxExpandedHeight);
+}
+
 MyGUI::IntCoord BuildPanelCoordFromAnchor(int left, int top)
 {
-    const int height = g_panelCollapsed ? kPanelCollapsedHeight : kPanelExpandedHeight;
+    const int height = g_panelCollapsed ? kPanelCollapsedHeight : ResolveExpandedPanelHeight();
     return MyGUI::IntCoord(left, top, kPanelWidth, height);
 }
 
@@ -2164,50 +2923,77 @@ MyGUI::IntCoord ClampPanelCoordToViewport(const MyGUI::IntCoord& inputCoord)
     const int width = (inputCoord.width > 0) ? inputCoord.width : kPanelWidth;
     const int height = (inputCoord.height > 0)
         ? inputCoord.height
-        : (g_panelCollapsed ? kPanelCollapsedHeight : kPanelExpandedHeight);
+        : (g_panelCollapsed ? kPanelCollapsedHeight : ResolveExpandedPanelHeight());
 
     int viewWidth = 0;
     int viewHeight = 0;
     if (!TryGetViewportSize(&viewWidth, &viewHeight))
     {
-        if (left < kPanelViewportPadding)
-        {
-            left = kPanelViewportPadding;
-        }
-        if (top < kPanelViewportPadding)
-        {
-            top = kPanelViewportPadding;
-        }
+        const int minLeft = kPanelMinimumVisibleWidth - width;
+        const int minTop = kPanelMinimumVisibleHeight - height;
+        left = ClampIntValue(left, minLeft, kPanelViewportPadding);
+        top = ClampIntValue(top, minTop, kPanelViewportPadding);
         return MyGUI::IntCoord(left, top, width, height);
     }
 
-    int minLeft = kPanelViewportPadding;
-    int minTop = kPanelViewportPadding;
-    int maxLeft = viewWidth - width - kPanelViewportPadding;
-    int maxTop = viewHeight - height - kPanelViewportPadding;
+    int minVisibleWidth = kPanelMinimumVisibleWidth;
+    if (minVisibleWidth > width)
+    {
+        minVisibleWidth = width;
+    }
+
+    int minVisibleHeight = kPanelMinimumVisibleHeight;
+    if (minVisibleHeight < kPanelHeaderHeight)
+    {
+        minVisibleHeight = kPanelHeaderHeight;
+    }
+    if (minVisibleHeight > height)
+    {
+        minVisibleHeight = height;
+    }
+
+    int minLeft = minVisibleWidth - width;
+    int minTop = minVisibleHeight - height;
+    int maxLeft = viewWidth - minVisibleWidth;
+    int maxTop = viewHeight - minVisibleHeight;
 
     if (maxLeft < minLeft)
     {
         minLeft = 0;
-        maxLeft = viewWidth - width;
-        if (maxLeft < minLeft)
-        {
-            maxLeft = minLeft;
-        }
+        maxLeft = 0;
     }
-
     if (maxTop < minTop)
     {
         minTop = 0;
-        maxTop = viewHeight - height;
-        if (maxTop < minTop)
-        {
-            maxTop = minTop;
-        }
+        maxTop = 0;
     }
 
     left = ClampIntValue(left, minLeft, maxLeft);
     top = ClampIntValue(top, minTop, maxTop);
+
+    const int snapLeft = 0;
+    const int snapTop = 0;
+    const int snapRight = viewWidth - width;
+    const int snapBottom = viewHeight - height;
+
+    if (left >= snapLeft - kPanelEdgeSnapDistance && left <= snapLeft + kPanelEdgeSnapDistance)
+    {
+        left = snapLeft;
+    }
+    else if (left >= snapRight - kPanelEdgeSnapDistance && left <= snapRight + kPanelEdgeSnapDistance)
+    {
+        left = snapRight;
+    }
+
+    if (top >= snapTop - kPanelEdgeSnapDistance && top <= snapTop + kPanelEdgeSnapDistance)
+    {
+        top = snapTop;
+    }
+    else if (top >= snapBottom - kPanelEdgeSnapDistance && top <= snapBottom + kPanelEdgeSnapDistance)
+    {
+        top = snapBottom;
+    }
+
     return MyGUI::IntCoord(left, top, width, height);
 }
 
@@ -2235,36 +3021,120 @@ void ApplyPanelLayout(const MyGUI::IntCoord& panelCoord)
         return;
     }
 
-    const MyGUI::IntCoord clampedCoord = ClampPanelCoordToViewport(panelCoord);
+    NormalizePanelVisualSettings();
+    MyGUI::IntCoord desiredCoord = panelCoord;
+    desiredCoord.width = kPanelWidth;
+    desiredCoord.height = g_panelCollapsed ? kPanelCollapsedHeight : ResolveExpandedPanelHeight();
+
+    const MyGUI::IntCoord clampedCoord = ClampPanelCoordToViewport(desiredCoord);
     StorePanelRuntimePosition(clampedCoord);
 
     g_panel->setCoord(clampedCoord);
     g_panel->setVisible(!g_panelHidden);
 
     const bool bodyVisible = !g_panelHidden && !g_panelCollapsed;
+    const int bodyTop = GetPanelBodyTop();
+    const int bodyHeight = (clampedCoord.height > bodyTop) ? (clampedCoord.height - bodyTop) : 0;
+    const int closeButtonTop = (kPanelHeaderHeight - g_panelCloseButtonSize) / 2;
+    const int collapseButtonTop = (kPanelHeaderHeight - g_panelCollapseButtonSize) / 2;
+    const int closeButtonLeft = kPanelWidth - kPanelHeaderButtonRightPadding - g_panelCloseButtonSize;
+    const int collapseButtonLeft = closeButtonLeft - kPanelHeaderButtonGap - g_panelCollapseButtonSize;
+    int titleInset = kPanelHeaderButtonRightPadding + g_panelCloseButtonSize + kPanelHeaderButtonGap + g_panelCollapseButtonSize + 8;
+    if (titleInset < 36)
+    {
+        titleInset = 36;
+    }
+    int titleLeft = titleInset;
+    int titleWidth = kPanelWidth - (titleInset * 2);
+    if (titleWidth < 120)
+    {
+        titleLeft = 12;
+        titleWidth = kPanelWidth - 24;
+    }
+
+    if (g_headerBackground)
+    {
+        g_headerBackground->setCoord(MyGUI::IntCoord(0, 0, kPanelWidth, kPanelHeaderHeight));
+    }
 
     if (g_headerFrame)
     {
-        g_headerFrame->setCoord(MyGUI::IntCoord(0, 0, kPanelWidth, 38));
+        g_headerFrame->setCoord(MyGUI::IntCoord(0, 0, kPanelWidth, kPanelHeaderHeight));
     }
 
     if (g_headerTitleText)
     {
-        g_headerTitleText->setCoord(MyGUI::IntCoord(12, 8, kPanelWidth - 116, 22));
+        g_headerTitleText->setCoord(MyGUI::IntCoord(titleLeft, 0, titleWidth, kPanelHeaderHeight));
+        ApplyPanelHeaderTitleFont();
     }
 
     if (g_collapseButton)
     {
-        g_collapseButton->setCoord(MyGUI::IntCoord(kPanelWidth - 96, 4, 84, 30));
+        g_collapseButton->setCoord(MyGUI::IntCoord(
+            collapseButtonLeft,
+            collapseButtonTop,
+            g_panelCollapseButtonSize,
+            g_panelCollapseButtonSize));
+    }
+
+    if (g_closeButton)
+    {
+        g_closeButton->setCoord(MyGUI::IntCoord(
+            closeButtonLeft,
+            closeButtonTop,
+            g_panelCloseButtonSize,
+            g_panelCloseButtonSize));
     }
 
     if (g_bodyFrame)
     {
-        g_bodyFrame->setCoord(MyGUI::IntCoord(0, 38, kPanelWidth, kPanelExpandedHeight - 38));
+        g_bodyFrame->setCoord(MyGUI::IntCoord(0, bodyTop, kPanelWidth, bodyHeight));
         g_bodyFrame->setVisible(bodyVisible);
     }
 
+    if (g_bodyScrollView)
+    {
+        g_bodyScrollView->setCoord(MyGUI::IntCoord(0, bodyTop, kPanelWidth, bodyHeight));
+        g_bodyScrollView->setVisible(bodyVisible);
+    }
+
     UpdatePanelBodyWidgetVisibility(bodyVisible);
+
+    if (g_statusText)
+    {
+        g_statusText->setCoord(BuildBodyCoord(20, GetStatusTopInPanelCoords(), kPanelWidth - 40, 18));
+    }
+
+    if (g_bodyScrollView)
+    {
+        const int minCanvasWidth = kPanelWidth - kPanelBodyScrollPadding;
+        const int minCanvasHeight = bodyHeight - kPanelBodyScrollPadding;
+        const int canvasWidth = (minCanvasWidth > 1) ? minCanvasWidth : 1;
+        const int baseCanvasHeight = (minCanvasHeight > 1) ? minCanvasHeight : 1;
+        const int requiredBodyContentHeight = GetRequiredBodyContentHeight();
+        const int canvasHeight = (requiredBodyContentHeight > baseCanvasHeight)
+            ? requiredBodyContentHeight
+            : baseCanvasHeight;
+
+        g_bodyScrollView->setCanvasSize(canvasWidth, canvasHeight);
+        g_bodyScrollView->setVisibleHScroll(false);
+        g_bodyScrollView->setVisibleVScroll(canvasHeight > baseCanvasHeight);
+
+        if (!bodyVisible)
+        {
+            g_bodyScrollView->setViewOffset(MyGUI::IntPoint(0, 0));
+        }
+        else
+        {
+            MyGUI::IntPoint viewOffset = g_bodyScrollView->getViewOffset();
+            const int maxViewTop = (canvasHeight > baseCanvasHeight) ? (canvasHeight - baseCanvasHeight) : 0;
+            if (viewOffset.top > maxViewTop)
+            {
+                viewOffset.top = maxViewTop;
+                g_bodyScrollView->setViewOffset(viewOffset);
+            }
+        }
+    }
 }
 
 void ApplyPanelLayout()
@@ -2423,11 +3293,17 @@ void TickPanelDrag()
 
 void ResetPanelWidgetPointers()
 {
+    ResetPendingInventorySearchShortcut();
+    ResetInventorySearchEditSnapshot();
+
     g_panel = 0;
+    g_headerBackground = 0;
     g_headerFrame = 0;
     g_headerTitleText = 0;
     g_collapseButton = 0;
+    g_closeButton = 0;
     g_bodyFrame = 0;
+    g_bodyScrollView = 0;
     g_targetSectionText = 0;
     g_targetNameText = 0;
     g_targetFactionText = 0;
@@ -2547,6 +3423,7 @@ void RefreshHotkeyBinding()
 void LoadConfig()
 {
     g_pluginEnabled = true;
+    g_developerMode = false;
     g_loggingLevel = LoggingLevel_Info;
     g_togglePanelRequireCtrl = true;
     g_togglePanelRequireShift = true;
@@ -2555,6 +3432,12 @@ void LoadConfig()
     g_confirmDangerousActions = true;
     g_panelHidden = false;
     g_panelCollapsed = false;
+    g_panelMinExpandedHeight = kPanelMinExpandedHeightDefault;
+    g_panelMaxExpandedHeight = kPanelExpandedHeight;
+    g_panelHeaderTitleFontHeight = kPanelHeaderTitleFontHeightDefault;
+    g_panelCollapseButtonSize = kPanelCollapseButtonSizeDefault;
+    g_panelCloseButtonSize = kPanelCloseButtonSizeDefault;
+    g_panelBodyOverlap = kPanelBodyOverlapDefault;
 
     std::string configPath;
     if (!TryResolveModConfigPath(&configPath))
@@ -2575,11 +3458,16 @@ void LoadConfig()
     }
 
     bool parsedBool = false;
+    int parsedInt = 0;
     std::string parsedString;
 
     if (TryParseJsonBoolByKey(configText, "enabled", &parsedBool))
     {
         g_pluginEnabled = parsedBool;
+    }
+    if (TryParseJsonBoolByKey(configText, kDeveloperModeConfigKey, &parsedBool))
+    {
+        g_developerMode = parsedBool;
     }
     if (TryParseJsonBoolByKey(configText, "toggle_panel_ctrl", &parsedBool))
     {
@@ -2605,6 +3493,30 @@ void LoadConfig()
     {
         g_confirmDangerousActions = parsedBool;
     }
+    if (TryParseJsonIntByKey(configText, "panel_min_expanded_height", &parsedInt))
+    {
+        g_panelMinExpandedHeight = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "panel_max_expanded_height", &parsedInt))
+    {
+        g_panelMaxExpandedHeight = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "panel_header_title_font_height", &parsedInt))
+    {
+        g_panelHeaderTitleFontHeight = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "panel_collapse_button_size", &parsedInt))
+    {
+        g_panelCollapseButtonSize = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "panel_close_button_size", &parsedInt))
+    {
+        g_panelCloseButtonSize = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "panel_body_overlap", &parsedInt))
+    {
+        g_panelBodyOverlap = parsedInt;
+    }
 
     if (TryParseJsonStringByKey(configText, "toggle_panel_key", &parsedString))
     {
@@ -2624,14 +3536,23 @@ void LoadConfig()
         g_loggingLevel = LoggingLevel_Debug;
     }
 
+    NormalizePanelHeightSettings();
+    NormalizePanelVisualSettings();
     RefreshHotkeyBinding();
 
     std::stringstream info;
     info << "mod config loaded enabled=" << (g_pluginEnabled ? "true" : "false")
+         << " developer_mode=" << (g_developerMode ? "true" : "false")
          << " hotkey=\"" << g_hotkeyDisplay << "\""
          << " start_hidden=" << (g_panelHidden ? "true" : "false")
          << " start_collapsed=" << (g_panelCollapsed ? "true" : "false")
-         << " confirm_dangerous_actions=" << (g_confirmDangerousActions ? "true" : "false");
+         << " confirm_dangerous_actions=" << (g_confirmDangerousActions ? "true" : "false")
+         << " min_height=" << g_panelMinExpandedHeight
+         << " max_height=" << g_panelMaxExpandedHeight
+         << " title_font_height=" << g_panelHeaderTitleFontHeight
+         << " collapse_button_size=" << g_panelCollapseButtonSize
+         << " close_button_size=" << g_panelCloseButtonSize
+         << " body_overlap=" << g_panelBodyOverlap;
     LogInfoLine(info.str());
 }
 
@@ -2848,6 +3769,194 @@ EMC_Result __cdecl SetTogglePanelRequireAlt(void*, int32_t value, char* errBuf, 
     return EMC_OK;
 }
 
+EMC_Result __cdecl GetPanelMinExpandedHeight(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_panelMinExpandedHeight;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetPanelMinExpandedHeight(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    const int previousMin = g_panelMinExpandedHeight;
+    const int previousMax = g_panelMaxExpandedHeight;
+
+    g_panelMinExpandedHeight = ClampPanelHeightSettingValue(value);
+    if (g_panelMinExpandedHeight > g_panelMaxExpandedHeight)
+    {
+        g_panelMaxExpandedHeight = g_panelMinExpandedHeight;
+    }
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_panelMinExpandedHeight = previousMin;
+        g_panelMaxExpandedHeight = previousMax;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    ApplyPanelLayout();
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetPanelMaxExpandedHeight(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_panelMaxExpandedHeight;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetPanelMaxExpandedHeight(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    const int previousMin = g_panelMinExpandedHeight;
+    const int previousMax = g_panelMaxExpandedHeight;
+
+    g_panelMaxExpandedHeight = ClampPanelHeightSettingValue(value);
+    if (g_panelMaxExpandedHeight < g_panelMinExpandedHeight)
+    {
+        g_panelMinExpandedHeight = g_panelMaxExpandedHeight;
+    }
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_panelMinExpandedHeight = previousMin;
+        g_panelMaxExpandedHeight = previousMax;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    ApplyPanelLayout();
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetPanelHeaderTitleFontHeight(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_panelHeaderTitleFontHeight;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetPanelHeaderTitleFontHeight(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    const int previousValue = g_panelHeaderTitleFontHeight;
+    g_panelHeaderTitleFontHeight = ClampPanelHeaderTitleFontHeightValue(value);
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_panelHeaderTitleFontHeight = previousValue;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    ApplyPanelLayout();
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetPanelCollapseButtonSize(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_panelCollapseButtonSize;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetPanelCollapseButtonSize(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    const int previousValue = g_panelCollapseButtonSize;
+    g_panelCollapseButtonSize = ClampPanelHeaderButtonSizeValue(value);
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_panelCollapseButtonSize = previousValue;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    ApplyPanelLayout();
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetPanelCloseButtonSize(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_panelCloseButtonSize;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetPanelCloseButtonSize(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    const int previousValue = g_panelCloseButtonSize;
+    g_panelCloseButtonSize = ClampPanelHeaderButtonSizeValue(value);
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_panelCloseButtonSize = previousValue;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    ApplyPanelLayout();
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetPanelBodyOverlap(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_panelBodyOverlap;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetPanelBodyOverlap(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    const int previousValue = g_panelBodyOverlap;
+    g_panelBodyOverlap = ClampPanelBodyOverlapValue(value);
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_panelBodyOverlap = previousValue;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    ApplyPanelLayout();
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
 const EMC_ModDescriptorV1 kModHubModDescriptor = {
     kModHubNamespaceId,
     kModHubNamespaceDisplayName,
@@ -2892,17 +4001,122 @@ const EMC_BoolSettingDefV1 kModHubTogglePanelAltSetting = {
     &SetTogglePanelRequireAlt
 };
 
-const emc::ModHubClientSettingRowV1 kModHubRows[] = {
+const EMC_IntSettingDefV2 kModHubPanelMinHeightSetting = {
+    "panel_min_expanded_height",
+    kModHubPanelMinHeightLabel,
+    kModHubPanelMinHeightDescription,
+    0,
+    kPanelExpandedHeightLowerBound,
+    kPanelExpandedHeightUpperBound,
+    10,
+    { 50, 20, 10 },
+    { 10, 20, 50 },
+    &GetPanelMinExpandedHeight,
+    &SetPanelMinExpandedHeight
+};
+
+const EMC_IntSettingDefV2 kModHubPanelMaxHeightSetting = {
+    "panel_max_expanded_height",
+    kModHubPanelMaxHeightLabel,
+    kModHubPanelMaxHeightDescription,
+    0,
+    kPanelExpandedHeightLowerBound,
+    kPanelExpandedHeightUpperBound,
+    10,
+    { 50, 20, 10 },
+    { 10, 20, 50 },
+    &GetPanelMaxExpandedHeight,
+    &SetPanelMaxExpandedHeight
+};
+
+const EMC_IntSettingDefV2 kModHubPanelHeaderTitleFontHeightSetting = {
+    "panel_header_title_font_height",
+    kModHubPanelHeaderTitleFontHeightLabel,
+    kModHubPanelHeaderTitleFontHeightDescription,
+    0,
+    kPanelHeaderTitleFontHeightLowerBound,
+    kPanelHeaderTitleFontHeightUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetPanelHeaderTitleFontHeight,
+    &SetPanelHeaderTitleFontHeight
+};
+
+const EMC_IntSettingDefV2 kModHubPanelCollapseButtonSizeSetting = {
+    "panel_collapse_button_size",
+    kModHubPanelCollapseButtonSizeLabel,
+    kModHubPanelCollapseButtonSizeDescription,
+    0,
+    kPanelHeaderButtonSizeLowerBound,
+    kPanelHeaderButtonSizeUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetPanelCollapseButtonSize,
+    &SetPanelCollapseButtonSize
+};
+
+const EMC_IntSettingDefV2 kModHubPanelCloseButtonSizeSetting = {
+    "panel_close_button_size",
+    kModHubPanelCloseButtonSizeLabel,
+    kModHubPanelCloseButtonSizeDescription,
+    0,
+    kPanelHeaderButtonSizeLowerBound,
+    kPanelHeaderButtonSizeUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetPanelCloseButtonSize,
+    &SetPanelCloseButtonSize
+};
+
+const EMC_IntSettingDefV2 kModHubPanelBodyOverlapSetting = {
+    "panel_body_overlap",
+    kModHubPanelBodyOverlapLabel,
+    kModHubPanelBodyOverlapDescription,
+    0,
+    kPanelBodyOverlapLowerBound,
+    kPanelBodyOverlapUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetPanelBodyOverlap,
+    &SetPanelBodyOverlap
+};
+
+const emc::ModHubClientSettingRowV1 kModHubBaseRows[] = {
     { emc::MOD_HUB_CLIENT_SETTING_KIND_KEYBIND, &kModHubTogglePanelKeySetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelCtrlSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelShiftSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting }
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMinHeightSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMaxHeightSetting }
 };
 
-const emc::ModHubClientTableRegistrationV1 kModHubRegistration = {
+const emc::ModHubClientSettingRowV1 kModHubDeveloperRows[] = {
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_KEYBIND, &kModHubTogglePanelKeySetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelCtrlSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelShiftSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMinHeightSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMaxHeightSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelHeaderTitleFontHeightSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelCollapseButtonSizeSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelCloseButtonSizeSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelBodyOverlapSetting }
+};
+
+const emc::ModHubClientTableRegistrationV1 kModHubBaseRegistration = {
     &kModHubModDescriptor,
-    kModHubRows,
-    static_cast<uint32_t>(sizeof(kModHubRows) / sizeof(kModHubRows[0]))
+    kModHubBaseRows,
+    static_cast<uint32_t>(sizeof(kModHubBaseRows) / sizeof(kModHubBaseRows[0]))
+};
+
+const emc::ModHubClientTableRegistrationV1 kModHubDeveloperRegistration = {
+    &kModHubModDescriptor,
+    kModHubDeveloperRows,
+    static_cast<uint32_t>(sizeof(kModHubDeveloperRows) / sizeof(kModHubDeveloperRows[0]))
 };
 
 void EnsureModHubClientConfigured()
@@ -2913,7 +4127,7 @@ void EnsureModHubClientConfigured()
     }
 
     emc::ModHubClient::Config config;
-    config.table_registration = &kModHubRegistration;
+    config.table_registration = g_developerMode ? &kModHubDeveloperRegistration : &kModHubBaseRegistration;
     g_modHubClient.SetConfig(config);
     g_modHubClientConfigured = true;
 }
@@ -3009,6 +4223,82 @@ void TickPanelToggleHotkey()
     }
 
     g_hotkeyPrevDown = hotkeyDown;
+}
+
+bool IsInventorySearchEditFocused()
+{
+    if (!g_itemSearchEdit)
+    {
+        return false;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    return inputManager != 0 && inputManager->getKeyFocusWidget() == g_itemSearchEdit;
+}
+
+void FocusInventorySearchEdit(const char* reason)
+{
+    if (!g_itemSearchEdit)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    if (!inputManager)
+    {
+        return;
+    }
+
+    inputManager->setKeyFocusWidget(g_itemSearchEdit);
+
+    if (ShouldLogDebug())
+    {
+        std::stringstream line;
+        line << "inventory search focused";
+        if (reason)
+        {
+            line << " reason=\"" << reason << "\"";
+        }
+        LogDebugLine(line.str());
+    }
+}
+
+bool IsInventorySearchFocusHotkeyDown()
+{
+    if (!key || !key->keyboard)
+    {
+        return false;
+    }
+
+    if (g_panelHidden || g_panelCollapsed || !g_panel || !g_itemSearchEdit)
+    {
+        return false;
+    }
+
+    if (g_activePanelTab != PanelTab_Inventory)
+    {
+        return false;
+    }
+
+    if (IsInventorySearchEditFocused())
+    {
+        return false;
+    }
+
+    return key->ctrl && key->keyboard->isKeyDown(OIS::KC_F);
+}
+
+void TickInventorySearchFocusHotkey()
+{
+    const bool hotkeyDown = IsInventorySearchFocusHotkeyDown();
+    if (hotkeyDown && !g_inventorySearchCtrlFPrevDown)
+    {
+        EnsureInventoryFoodItemOptionsLoaded();
+        RefreshInventoryFoodItemDropdown();
+        FocusInventorySearchEdit("ctrl_f_hotkey");
+    }
+
+    g_inventorySearchCtrlFPrevDown = hotkeyDown;
 }
 
 bool TryGetSelectedTarget(PlayerInterface* player, Character** outTarget)
@@ -3556,7 +4846,7 @@ void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)
         g_targetAlignmentText->setCaption("Alignment: Unknown");
         g_targetMembershipText->setCaption("Membership: Unknown");
         g_targetStateText->setCaption("State: Unknown");
-        g_noTargetText->setCaption("No target - select a character");
+        g_noTargetText->setCaption("Source: None");
         SetActionButtonsEnabled(false);
         return;
     }
@@ -4450,6 +5740,14 @@ void OnCollapseButtonClicked(MyGUI::Widget*)
     TogglePanelCollapsed("button");
 }
 
+void OnCloseButtonClicked(MyGUI::Widget*)
+{
+    if (!g_panelHidden)
+    {
+        TogglePanelHidden("close_button");
+    }
+}
+
 void OnForceUnconsciousButtonClicked(MyGUI::Widget*)
 {
     const char* actionId = "force_unconscious";
@@ -4927,6 +6225,47 @@ void OnInventoryItemSearchTextChanged(MyGUI::EditBox*)
     RefreshInventoryFoodItemDropdown();
 }
 
+void OnInventoryItemSearchFocusChanged(MyGUI::Widget*, MyGUI::Widget*)
+{
+    ResetPendingInventorySearchShortcut();
+}
+
+void OnInventoryItemSearchKeyPressed(MyGUI::Widget* sender, MyGUI::KeyCode keyCode, MyGUI::Char character)
+{
+    (void)character;
+
+    if (!sender || !IsInterestingInventorySearchMyGuiKey(keyCode))
+    {
+        return;
+    }
+
+    ScheduleInventorySearchMyGuiShortcut(sender->castType<MyGUI::EditBox>(false), keyCode);
+}
+
+void OnInventoryItemSearchKeyReleased(MyGUI::Widget* sender, MyGUI::KeyCode keyCode)
+{
+    if (!sender)
+    {
+        ResetPendingInventorySearchShortcut();
+        ResetInventorySearchEditSnapshot();
+        return;
+    }
+
+    MyGUI::EditBox* searchEdit = sender->castType<MyGUI::EditBox>(false);
+    if (!searchEdit)
+    {
+        ResetPendingInventorySearchShortcut();
+        return;
+    }
+
+    if (IsInterestingInventorySearchMyGuiKey(keyCode))
+    {
+        ApplyPendingInventorySearchEditShortcut(searchEdit, keyCode);
+    }
+
+    RememberInventorySearchEditSnapshot(searchEdit);
+}
+
 void OnInventoryCategoryChanged(MyGUI::ComboBox*, size_t)
 {
     EnsureInventoryFoodItemOptionsLoaded();
@@ -5382,6 +6721,10 @@ void SetActivePanelTab(PanelTab tab)
     }
 
     g_activePanelTab = tab;
+    if (g_bodyScrollView)
+    {
+        g_bodyScrollView->setViewOffset(MyGUI::IntPoint(0, 0));
+    }
     ApplyPanelLayout();
 }
 
@@ -5644,13 +6987,158 @@ void ConfigureListBoxWidget(MyGUI::ListBox* widget)
     widget->setActivateOnClick(true);
 }
 
+void TrySetTextWidgetFontName(MyGUI::TextBox* widget, const char* fontName)
+{
+    if (!widget || !fontName || fontName[0] == '\0')
+    {
+        return;
+    }
+
+    try
+    {
+        widget->setFontName(fontName);
+    }
+    catch (...)
+    {
+    }
+}
+
+const char* ResolvePanelHeaderTitleFontName(int fontHeight)
+{
+    if (fontHeight <= 17)
+    {
+        return "Kenshi_PaintedTextFont_Small";
+    }
+
+    if (fontHeight <= 23)
+    {
+        return "Kenshi_PaintedTextFont_Medium";
+    }
+
+    return "Kenshi_PaintedTextFont_Large";
+}
+
+void ApplyPanelHeaderTitleFont()
+{
+    if (!g_headerTitleText)
+    {
+        return;
+    }
+
+    TrySetTextWidgetFontName(g_headerTitleText, ResolvePanelHeaderTitleFontName(g_panelHeaderTitleFontHeight));
+}
+
+void ApplySectionHeaderFonts()
+{
+    MyGUI::TextBox* headers[] = {
+        g_targetSectionText,
+        g_statesSectionText,
+        g_limbDamageSectionText,
+        g_teleportSectionText,
+        g_inventorySectionText,
+        g_spawnFoodSectionText,
+        g_dangerousSectionText
+    };
+
+    for (size_t index = 0; index < sizeof(headers) / sizeof(headers[0]); ++index)
+    {
+        TrySetTextWidgetFontName(headers[index], "Kenshi_PaintedTextFont_Medium");
+    }
+}
+
+void ConfigureScrollViewWidget(MyGUI::ScrollView* widget)
+{
+    if (!widget)
+    {
+        return;
+    }
+
+    widget->setVisibleHScroll(false);
+    widget->setVisibleVScroll(false);
+    widget->setCanvasAlign(MyGUI::Align::Left | MyGUI::Align::Top);
+    widget->setViewOffset(MyGUI::IntPoint(0, 0));
+}
+
+MyGUI::ScrollView* CreatePanelBodyScrollView(MyGUI::Widget* parent, const MyGUI::IntCoord& coord)
+{
+    if (!parent)
+    {
+        return 0;
+    }
+
+    const char* skins[] = {
+        "Kenshi_ScrollViewEmpty",
+        "Kenshi_ScrollViewEmptyLight",
+        "Kenshi_ScrollView",
+        "ScrollView"
+    };
+
+    for (size_t index = 0; index < sizeof(skins) / sizeof(skins[0]); ++index)
+    {
+        try
+        {
+            MyGUI::ScrollView* widget =
+                parent->createWidget<MyGUI::ScrollView>(skins[index], coord, MyGUI::Align::Default);
+            if (widget)
+            {
+                return widget;
+            }
+        }
+        catch (...)
+        {
+        }
+    }
+
+    return 0;
+}
+
+MyGUI::Button* CreatePanelCloseButton(MyGUI::Widget* parent, const MyGUI::IntCoord& coord)
+{
+    if (!parent)
+    {
+        return 0;
+    }
+
+    try
+    {
+        return parent->createWidget<MyGUI::Button>(
+            "Kenshi_CloseButtonSkin",
+            coord,
+            MyGUI::Align::Default);
+    }
+    catch (...)
+    {
+    }
+
+    try
+    {
+        MyGUI::Button* button = parent->createWidget<MyGUI::Button>(
+            "Kenshi_Button1",
+            coord,
+            MyGUI::Align::Default);
+        if (button)
+        {
+            button->setCaption("X");
+        }
+        return button;
+    }
+    catch (...)
+    {
+    }
+
+    return 0;
+}
+
 bool HasAllPanelWidgets()
 {
     return g_panel
+        && g_headerBackground
         && g_headerFrame
         && g_headerTitleText
         && g_collapseButton
+        && g_closeButton
         && g_bodyFrame
+        && g_bodyScrollView
         && g_targetSectionText
         && g_targetNameText
         && g_targetFactionText
@@ -5699,18 +7187,22 @@ void InitializePanelWidgets()
         return;
     }
 
-    g_headerFrame->setCaption("");
+    g_headerBackground->setCaption("");
+    g_headerBackground->setEnabled(true);
+    g_headerBackground->setNeedMouseFocus(false);
     g_headerFrame->setEnabled(true);
     g_headerFrame->setNeedMouseFocus(true);
     g_headerFrame->setNeedKeyFocus(true);
     g_panel->setNeedMouseFocus(true);
     g_headerTitleText->setCaption("Emkejs Test Kit");
     g_headerTitleText->setNeedMouseFocus(false);
-    ConfigureTextWidget(g_headerTitleText);
+    g_headerTitleText->setTextAlign(MyGUI::Align::Center | MyGUI::Align::VCenter);
+    ApplyPanelHeaderTitleFont();
 
     g_bodyFrame->setCaption("");
     g_bodyFrame->setEnabled(false);
     g_bodyFrame->setNeedMouseFocus(true);
+    ConfigureScrollViewWidget(g_bodyScrollView);
 
     ConfigureTextWidget(g_targetSectionText);
     ConfigureTextWidget(g_targetNameText);
@@ -5731,6 +7223,7 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_itemQuantityLabelText);
     ConfigureTextWidget(g_dangerousSectionText);
     ConfigureTextWidget(g_statusText);
+    ApplySectionHeaderFonts();
     ConfigureEditBoxWidget(g_moneyAmountEdit);
     ConfigureEditBoxWidget(g_itemSearchEdit);
     ConfigureEditBoxWidget(g_itemQuantityEdit);
@@ -5744,12 +7237,12 @@ void InitializePanelWidgets()
     g_targetAlignmentText->setCaption("Alignment: Unknown");
     g_targetMembershipText->setCaption("Membership: Unknown");
     g_targetStateText->setCaption("State: Unknown");
-    g_noTargetText->setCaption("No target - select a character");
+    g_noTargetText->setCaption("Source: None");
     UpdatePanelTabButtonCaptions();
     g_statesSectionText->setCaption("States");
     g_limbDamageSectionText->setCaption("Limb Damage");
     g_teleportSectionText->setCaption("Teleport");
-    g_inventorySectionText->setCaption("Inventory");
+    g_inventorySectionText->setCaption("");
     g_moneyAmountLabelText->setCaption("Cats To Add");
     g_spawnFoodSectionText->setCaption("Spawn Items");
     g_itemCategoryLabelText->setCaption("Category");
@@ -5795,6 +7288,7 @@ void InitializePanelWidgets()
     SetSelectionActionButtonsEnabled(false);
 
     g_collapseButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCollapseButtonClicked);
+    g_closeButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCloseButtonClicked);
     g_healthTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnHealthTabButtonPressed);
     g_teleportTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportTabButtonPressed);
     g_inventoryTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventoryTabButtonPressed);
@@ -5809,6 +7303,10 @@ void InitializePanelWidgets()
     g_addMoneyButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnAddMoneyButtonPressed);
     g_itemCategoryDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnInventoryCategoryChanged);
     g_itemSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnInventoryItemSearchTextChanged);
+    g_itemSearchEdit->eventKeySetFocus += MyGUI::newDelegate(&OnInventoryItemSearchFocusChanged);
+    g_itemSearchEdit->eventKeyLostFocus += MyGUI::newDelegate(&OnInventoryItemSearchFocusChanged);
+    g_itemSearchEdit->eventKeyButtonPressed += MyGUI::newDelegate(&OnInventoryItemSearchKeyPressed);
+    g_itemSearchEdit->eventKeyButtonReleased += MyGUI::newDelegate(&OnInventoryItemSearchKeyReleased);
     g_itemSearchResultsList->eventListMouseItemActivate += MyGUI::newDelegate(&OnInventorySearchResultsActivated);
     g_spawnItemButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnItemButtonPressed);
     g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
@@ -5856,177 +7354,218 @@ void CreatePanelWidgets()
         return;
     }
 
-    g_headerFrame = g_panel->createWidget<MyGUI::Button>(
+    const int initialBodyTop = GetPanelBodyTop();
+
+    g_headerBackground = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(0, 0, kPanelWidth, 38),
+        MyGUI::IntCoord(0, 0, kPanelWidth, kPanelHeaderHeight),
+        MyGUI::Align::Default);
+    g_headerFrame = g_panel->createWidget<MyGUI::Widget>(
+        "PanelEmpty",
+        MyGUI::IntCoord(0, 0, kPanelWidth, kPanelHeaderHeight),
         MyGUI::Align::Default);
     g_headerTitleText = g_headerFrame->createWidget<MyGUI::TextBox>(
-        "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(12, 8, kPanelWidth - 116, 22),
+        "Kenshi_TextboxPaintedText_Large",
+        MyGUI::IntCoord(12, 0, kPanelWidth - 24, kPanelHeaderHeight),
         MyGUI::Align::Default);
     g_collapseButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(kPanelWidth - 96, 4, 84, 30),
+        MyGUI::IntCoord(
+            kPanelWidth - kPanelHeaderButtonRightPadding - g_panelCloseButtonSize - kPanelHeaderButtonGap - g_panelCollapseButtonSize,
+            (kPanelHeaderHeight - g_panelCollapseButtonSize) / 2,
+            g_panelCollapseButtonSize,
+            g_panelCollapseButtonSize),
         MyGUI::Align::Default);
+    g_closeButton = CreatePanelCloseButton(
+        g_panel,
+        MyGUI::IntCoord(
+            kPanelWidth - kPanelHeaderButtonRightPadding - g_panelCloseButtonSize,
+            (kPanelHeaderHeight - g_panelCloseButtonSize) / 2,
+            g_panelCloseButtonSize,
+            g_panelCloseButtonSize));
     g_bodyFrame = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(0, 38, kPanelWidth, kPanelExpandedHeight - 38),
+        MyGUI::IntCoord(0, initialBodyTop, kPanelWidth, kPanelExpandedHeight - initialBodyTop),
         MyGUI::Align::Default);
-    g_targetSectionText = g_panel->createWidget<MyGUI::TextBox>(
+    g_bodyScrollView = CreatePanelBodyScrollView(
+        g_panel,
+        MyGUI::IntCoord(0, initialBodyTop, kPanelWidth, kPanelExpandedHeight - initialBodyTop));
+
+    MyGUI::Widget* bodyParent = 0;
+    if (g_bodyScrollView)
+    {
+        bodyParent = g_bodyScrollView->getClientWidget();
+        if (!bodyParent)
+        {
+            bodyParent = g_bodyScrollView;
+        }
+    }
+    if (!bodyParent)
+    {
+        DestroyPanel();
+        if (!g_loggedPanelCreateFailure)
+        {
+            LogErrorLine("failed to create panel body scroll view");
+            g_loggedPanelCreateFailure = true;
+        }
+        return;
+    }
+
+    g_targetSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 52, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_targetNameText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 52, kPanelWidth - 28, 18),
+        BuildBodyCoord(20, 74, 156, 18),
         MyGUI::Align::Default);
-    g_targetNameText = g_panel->createWidget<MyGUI::TextBox>(
+    g_targetFactionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 74, 156, 18),
+        BuildBodyCoord(184, 74, 156, 18),
         MyGUI::Align::Default);
-    g_targetFactionText = g_panel->createWidget<MyGUI::TextBox>(
+    g_targetAlignmentText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(184, 74, 156, 18),
+        BuildBodyCoord(20, 96, 156, 18),
         MyGUI::Align::Default);
-    g_targetAlignmentText = g_panel->createWidget<MyGUI::TextBox>(
+    g_targetMembershipText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 96, 156, 18),
+        BuildBodyCoord(184, 96, 156, 18),
         MyGUI::Align::Default);
-    g_targetMembershipText = g_panel->createWidget<MyGUI::TextBox>(
+    g_targetStateText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(184, 96, 156, 18),
+        BuildBodyCoord(20, 118, 156, 18),
         MyGUI::Align::Default);
-    g_targetStateText = g_panel->createWidget<MyGUI::TextBox>(
+    g_noTargetText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 118, kPanelWidth - 40, 18),
+        BuildBodyCoord(184, 118, 156, 18),
         MyGUI::Align::Default);
-    g_noTargetText = g_panel->createWidget<MyGUI::TextBox>(
-        "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 140, kPanelWidth - 40, 18),
-        MyGUI::Align::Default);
-    g_healthTabButton = g_panel->createWidget<MyGUI::Button>(
+    g_healthTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 170, 106, 28),
+        BuildBodyCoord(20, 170, 106, 28),
         MyGUI::Align::Default);
-    g_teleportTabButton = g_panel->createWidget<MyGUI::Button>(
+    g_teleportTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(127, 170, 106, 28),
+        BuildBodyCoord(127, 170, 106, 28),
         MyGUI::Align::Default);
-    g_inventoryTabButton = g_panel->createWidget<MyGUI::Button>(
+    g_inventoryTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(234, 170, 106, 28),
+        BuildBodyCoord(234, 170, 106, 28),
         MyGUI::Align::Default);
-    g_statesSectionText = g_panel->createWidget<MyGUI::TextBox>(
+    g_statesSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_fullRestoreButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 230, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_forceUnconsciousButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 264, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_forcePlayingDeadButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 298, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_limbDamageSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 332, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_damageLeftArmButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 354, 156, 28),
+        MyGUI::Align::Default);
+    g_damageRightArmButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(184, 354, 156, 28),
+        MyGUI::Align::Default);
+    g_damageLeftLegButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 388, 156, 28),
+        MyGUI::Align::Default);
+    g_damageRightLegButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(184, 388, 156, 28),
+        MyGUI::Align::Default);
+    g_teleportSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_teleportSelectedToCameraButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 230, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_inventorySectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_moneyAmountLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 208, kPanelWidth - 28, 18),
+        BuildBodyCoord(20, 208, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
-    g_fullRestoreButton = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(20, 230, kPanelWidth - 40, 28),
-        MyGUI::Align::Default);
-    g_forceUnconsciousButton = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(20, 264, kPanelWidth - 40, 28),
-        MyGUI::Align::Default);
-    g_forcePlayingDeadButton = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(20, 298, kPanelWidth - 40, 28),
-        MyGUI::Align::Default);
-    g_limbDamageSectionText = g_panel->createWidget<MyGUI::TextBox>(
-        "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 332, kPanelWidth - 28, 18),
-        MyGUI::Align::Default);
-    g_damageLeftArmButton = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(20, 354, 156, 28),
-        MyGUI::Align::Default);
-    g_damageRightArmButton = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(184, 354, 156, 28),
-        MyGUI::Align::Default);
-    g_damageLeftLegButton = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(20, 388, 156, 28),
-        MyGUI::Align::Default);
-    g_damageRightLegButton = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(184, 388, 156, 28),
-        MyGUI::Align::Default);
-    g_teleportSectionText = g_panel->createWidget<MyGUI::TextBox>(
-        "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 208, kPanelWidth - 28, 18),
-        MyGUI::Align::Default);
-    g_teleportSelectedToCameraButton = g_panel->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        MyGUI::IntCoord(20, 230, kPanelWidth - 40, 28),
-        MyGUI::Align::Default);
-    g_inventorySectionText = g_panel->createWidget<MyGUI::TextBox>(
-        "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 208, kPanelWidth - 28, 18),
-        MyGUI::Align::Default);
-    g_moneyAmountLabelText = g_panel->createWidget<MyGUI::TextBox>(
-        "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 230, kPanelWidth - 40, 18),
-        MyGUI::Align::Default);
-    g_moneyAmountEdit = g_panel->createWidget<MyGUI::EditBox>(
+    g_moneyAmountEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        MyGUI::IntCoord(20, 252, 156, 28),
+        BuildBodyCoord(20, 230, 156, 28),
         MyGUI::Align::Default);
-    g_addMoneyButton = g_panel->createWidget<MyGUI::Button>(
+    g_addMoneyButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(184, 252, 156, 28),
+        BuildBodyCoord(184, 230, 156, 28),
         MyGUI::Align::Default);
-    g_spawnFoodSectionText = g_panel->createWidget<MyGUI::TextBox>(
+    g_spawnFoodSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 274, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_itemCategoryLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 296, kPanelWidth - 28, 18),
+        BuildBodyCoord(20, 296, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
-    g_itemCategoryLabelText = g_panel->createWidget<MyGUI::TextBox>(
-        "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 318, kPanelWidth - 40, 18),
-        MyGUI::Align::Default);
-    g_itemCategoryDropdown = g_panel->createWidget<MyGUI::ComboBox>(
+    g_itemCategoryDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        MyGUI::IntCoord(20, 340, kPanelWidth - 40, 30),
+        BuildBodyCoord(20, 318, kPanelWidth - 40, 30),
         MyGUI::Align::Default);
-    g_itemSearchLabelText = g_panel->createWidget<MyGUI::TextBox>(
+    g_itemSearchLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 376, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 354, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
-    g_itemSearchEdit = g_panel->createWidget<MyGUI::EditBox>(
+    g_itemSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        MyGUI::IntCoord(20, 398, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 376, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
-    g_itemSearchResultsList = g_panel->createWidget<MyGUI::ListBox>(
+    g_itemSearchResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        MyGUI::IntCoord(20, 432, kPanelWidth - 40, 84),
+        BuildBodyCoord(20, 410, kPanelWidth - 40, 84),
         MyGUI::Align::Default);
-    g_itemDropdownLabelText = g_panel->createWidget<MyGUI::TextBox>(
+    g_itemDropdownLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 522, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 500, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
-    g_itemDropdown = g_panel->createWidget<MyGUI::ComboBox>(
+    g_itemDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        MyGUI::IntCoord(20, 544, kPanelWidth - 40, 30),
+        BuildBodyCoord(20, 522, kPanelWidth - 40, 30),
         MyGUI::Align::Default);
-    g_itemQuantityLabelText = g_panel->createWidget<MyGUI::TextBox>(
+    g_itemQuantityLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 580, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 558, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
-    g_itemQuantityEdit = g_panel->createWidget<MyGUI::EditBox>(
+    g_itemQuantityEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        MyGUI::IntCoord(20, 602, 156, 28),
+        BuildBodyCoord(20, 580, 156, 28),
         MyGUI::Align::Default);
-    g_spawnItemButton = g_panel->createWidget<MyGUI::Button>(
+    g_spawnItemButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(184, 602, 156, 28),
+        BuildBodyCoord(184, 580, 156, 28),
         MyGUI::Align::Default);
-    g_dangerousSectionText = g_panel->createWidget<MyGUI::TextBox>(
-        "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(14, 428, kPanelWidth - 28, 18),
+    g_dangerousSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 428, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
-    g_forceDyingButton = g_panel->createWidget<MyGUI::Button>(
+    g_forceDyingButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(20, 450, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 450, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
-    g_statusText = g_panel->createWidget<MyGUI::TextBox>(
+    g_statusText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 664, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, GetStatusTopInPanelCoords(), kPanelWidth - 40, 18),
         MyGUI::Align::Default);
 
     if (!HasAllPanelWidgets())
@@ -6079,6 +7618,7 @@ void OnSaveLoadTransitionStart(const char* source)
     DestroyPanel();
     g_lastPlayerInterface = 0;
     g_hotkeyPrevDown = false;
+    g_inventorySearchCtrlFPrevDown = false;
     g_lastStatusMessage = "Ready";
     ResetInventoryFoodItemOptions();
     ResetTargetSnapshot(&g_lastTargetSnapshot);
@@ -6092,6 +7632,7 @@ void PlayerInterface_updateUT_hook(PlayerInterface* thisptr)
     TickModHubAttachRetry();
     TickPanelToggleHotkey();
     EnsurePanel(thisptr);
+    TickInventorySearchFocusHotkey();
 }
 
 void SaveManager_loadByInfo_hook(SaveManager* thisptr, const SaveInfo& saveInfo, bool resetPos)
