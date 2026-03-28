@@ -45,7 +45,7 @@ const char* kDefaultTogglePanelKey = "D";
 const int kPanelLeft = 18;
 const int kPanelTop = 140;
 const int kPanelWidth = 360;
-const int kPanelExpandedHeight = 548;
+const int kPanelExpandedHeight = 640;
 const int kPanelCollapsedHeight = 42;
 const int kPanelViewportPadding = 16;
 const int kPanelDragThreshold = 3;
@@ -170,6 +170,9 @@ MyGUI::Button* g_addMoneyButton = 0;
 MyGUI::TextBox* g_spawnFoodSectionText = 0;
 MyGUI::TextBox* g_itemSearchLabelText = 0;
 MyGUI::EditBox* g_itemSearchEdit = 0;
+MyGUI::Button* g_itemSuggestionButton1 = 0;
+MyGUI::Button* g_itemSuggestionButton2 = 0;
+MyGUI::Button* g_itemSuggestionButton3 = 0;
 MyGUI::TextBox* g_itemDropdownLabelText = 0;
 MyGUI::ComboBox* g_itemDropdown = 0;
 MyGUI::TextBox* g_itemQuantityLabelText = 0;
@@ -182,6 +185,9 @@ MyGUI::TextBox* g_statusText = 0;
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
 bool g_inventoryFoodItemOptionsLoaded = false;
+size_t g_itemSuggestionOptionIndex1 = MyGUI::ITEM_NONE;
+size_t g_itemSuggestionOptionIndex2 = MyGUI::ITEM_NONE;
+size_t g_itemSuggestionOptionIndex3 = MyGUI::ITEM_NONE;
 
 void (*PlayerInterface_updateUT_orig)(PlayerInterface*) = 0;
 void (*SaveManager_loadByInfo_orig)(SaveManager*, const SaveInfo&, bool) = 0;
@@ -340,6 +346,95 @@ std::string BuildInventorySpawnOptionLabel(GameData* itemData)
 bool DoesInventorySpawnOptionMatchSearch(const InventorySpawnOption& option, const std::string& searchUpper)
 {
     return searchUpper.empty() || option.searchTextUpper.find(searchUpper) != std::string::npos;
+}
+
+void EnsureInventoryFoodItemOptionsLoaded();
+void RefreshInventoryFoodItemDropdown();
+
+void SetInventoryFoodSuggestionButton(
+    MyGUI::Button* button,
+    size_t* optionIndexState,
+    size_t optionIndex)
+{
+    if (optionIndexState)
+    {
+        *optionIndexState = optionIndex;
+    }
+
+    if (!button)
+    {
+        return;
+    }
+
+    if (optionIndex == MyGUI::ITEM_NONE || optionIndex >= g_inventoryFoodItemOptions.size())
+    {
+        button->setCaption("");
+        button->setEnabled(false);
+        return;
+    }
+
+    button->setCaption(g_inventoryFoodItemOptions[optionIndex].displayName);
+    button->setEnabled(true);
+}
+
+void RefreshInventoryFoodSuggestionButtons(const std::string& searchUpper)
+{
+    const bool showSuggestions = !searchUpper.empty() && g_filteredInventoryFoodItemOptionIndexes.size() > 1;
+    const size_t suggestionCount = showSuggestions
+        ? std::min<size_t>(3, g_filteredInventoryFoodItemOptionIndexes.size())
+        : 0;
+
+    MyGUI::Button* buttons[3] = {
+        g_itemSuggestionButton1,
+        g_itemSuggestionButton2,
+        g_itemSuggestionButton3
+    };
+    size_t* optionIndexStates[3] = {
+        &g_itemSuggestionOptionIndex1,
+        &g_itemSuggestionOptionIndex2,
+        &g_itemSuggestionOptionIndex3
+    };
+
+    for (size_t index = 0; index < 3; ++index)
+    {
+        const size_t optionIndex =
+            index < suggestionCount ? g_filteredInventoryFoodItemOptionIndexes[index] : MyGUI::ITEM_NONE;
+        SetInventoryFoodSuggestionButton(buttons[index], optionIndexStates[index], optionIndex);
+    }
+}
+
+bool TryPopulateInventoryFoodSelection(size_t optionIndex)
+{
+    if (optionIndex == MyGUI::ITEM_NONE || optionIndex >= g_inventoryFoodItemOptions.size())
+    {
+        return false;
+    }
+
+    EnsureInventoryFoodItemOptionsLoaded();
+
+    if (g_itemSearchEdit)
+    {
+        g_itemSearchEdit->setOnlyText(g_inventoryFoodItemOptions[optionIndex].displayName);
+    }
+
+    RefreshInventoryFoodItemDropdown();
+    if (!g_itemDropdown)
+    {
+        return false;
+    }
+
+    for (size_t filteredIndex = 0; filteredIndex < g_filteredInventoryFoodItemOptionIndexes.size(); ++filteredIndex)
+    {
+        if (g_filteredInventoryFoodItemOptionIndexes[filteredIndex] != optionIndex)
+        {
+            continue;
+        }
+
+        g_itemDropdown->setIndexSelected(filteredIndex);
+        return true;
+    }
+
+    return false;
 }
 
 const char* TargetSourceToUiLabel(TargetSource source)
@@ -760,6 +855,8 @@ void RefreshInventoryFoodItemDropdown()
 {
     if (!g_itemDropdown)
     {
+        g_filteredInventoryFoodItemOptionIndexes.clear();
+        RefreshInventoryFoodSuggestionButtons("");
         return;
     }
 
@@ -784,6 +881,8 @@ void RefreshInventoryFoodItemDropdown()
         g_itemDropdown->addItem(option.displayName);
     }
 
+    RefreshInventoryFoodSuggestionButtons(searchUpper);
+
     if (g_filteredInventoryFoodItemOptionIndexes.empty())
     {
         if (!g_inventoryFoodItemOptionsLoaded)
@@ -803,7 +902,13 @@ void RefreshInventoryFoodItemDropdown()
         return;
     }
 
-    g_itemDropdown->setIndexSelected(0);
+    if (g_filteredInventoryFoodItemOptionIndexes.size() == 1)
+    {
+        g_itemDropdown->setIndexSelected(0);
+        return;
+    }
+
+    g_itemDropdown->setIndexSelected(MyGUI::ITEM_NONE);
 }
 
 void ResetInventoryFoodItemOptions()
@@ -811,6 +916,9 @@ void ResetInventoryFoodItemOptions()
     g_inventoryFoodItemOptions.clear();
     g_filteredInventoryFoodItemOptionIndexes.clear();
     g_inventoryFoodItemOptionsLoaded = false;
+    g_itemSuggestionOptionIndex1 = MyGUI::ITEM_NONE;
+    g_itemSuggestionOptionIndex2 = MyGUI::ITEM_NONE;
+    g_itemSuggestionOptionIndex3 = MyGUI::ITEM_NONE;
 }
 
 void EnsureInventoryFoodItemOptionsLoaded()
@@ -1341,6 +1449,9 @@ void ResetPanelWidgetPointers()
     g_spawnFoodSectionText = 0;
     g_itemSearchLabelText = 0;
     g_itemSearchEdit = 0;
+    g_itemSuggestionButton1 = 0;
+    g_itemSuggestionButton2 = 0;
+    g_itemSuggestionButton3 = 0;
     g_itemDropdownLabelText = 0;
     g_itemDropdown = 0;
     g_itemQuantityLabelText = 0;
@@ -3533,6 +3644,54 @@ void OnInventoryItemSearchTextChanged(MyGUI::EditBox*)
     RefreshInventoryFoodItemDropdown();
 }
 
+void OnInventorySuggestionButton1Pressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    TryPopulateInventoryFoodSelection(g_itemSuggestionOptionIndex1);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnInventorySuggestionButton2Pressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    TryPopulateInventoryFoodSelection(g_itemSuggestionOptionIndex2);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnInventorySuggestionButton3Pressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    TryPopulateInventoryFoodSelection(g_itemSuggestionOptionIndex3);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnSpawnItemButtonClicked(MyGUI::Widget*)
 {
     const char* actionId = "spawn_inventory_item";
@@ -4252,6 +4411,9 @@ bool HasAllPanelWidgets()
         && g_spawnFoodSectionText
         && g_itemSearchLabelText
         && g_itemSearchEdit
+        && g_itemSuggestionButton1
+        && g_itemSuggestionButton2
+        && g_itemSuggestionButton3
         && g_itemDropdownLabelText
         && g_itemDropdown
         && g_itemQuantityLabelText
@@ -4339,6 +4501,12 @@ void InitializePanelWidgets()
     g_itemSearchEdit->setEditStatic(false);
     g_itemSearchEdit->setMaxTextLength(48);
     g_itemSearchEdit->setOnlyText("");
+    g_itemSuggestionButton1->setCaption("");
+    g_itemSuggestionButton2->setCaption("");
+    g_itemSuggestionButton3->setCaption("");
+    g_itemSuggestionButton1->setEnabled(false);
+    g_itemSuggestionButton2->setEnabled(false);
+    g_itemSuggestionButton3->setEnabled(false);
     g_itemQuantityEdit->setEditStatic(false);
     g_itemQuantityEdit->setMaxTextLength(10);
     g_itemQuantityEdit->setOnlyText("1");
@@ -4365,6 +4533,9 @@ void InitializePanelWidgets()
     g_teleportSelectedToCameraButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportSelectedToCameraButtonPressed);
     g_addMoneyButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnAddMoneyButtonPressed);
     g_itemSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnInventoryItemSearchTextChanged);
+    g_itemSuggestionButton1->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventorySuggestionButton1Pressed);
+    g_itemSuggestionButton2->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventorySuggestionButton2Pressed);
+    g_itemSuggestionButton3->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventorySuggestionButton3Pressed);
     g_spawnItemButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnItemButtonPressed);
     g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
@@ -4539,25 +4710,37 @@ void CreatePanelWidgets()
         "Kenshi_EditBox",
         MyGUI::IntCoord(20, 340, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
+    g_itemSuggestionButton1 = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(20, 374, kPanelWidth - 40, 24),
+        MyGUI::Align::Default);
+    g_itemSuggestionButton2 = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(20, 402, kPanelWidth - 40, 24),
+        MyGUI::Align::Default);
+    g_itemSuggestionButton3 = g_panel->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(20, 430, kPanelWidth - 40, 24),
+        MyGUI::Align::Default);
     g_itemDropdownLabelText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 374, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 460, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_itemDropdown = g_panel->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        MyGUI::IntCoord(20, 396, kPanelWidth - 40, 30),
+        MyGUI::IntCoord(20, 482, kPanelWidth - 40, 30),
         MyGUI::Align::Default);
     g_itemQuantityLabelText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 432, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 518, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_itemQuantityEdit = g_panel->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        MyGUI::IntCoord(20, 454, 156, 28),
+        MyGUI::IntCoord(20, 540, 156, 28),
         MyGUI::Align::Default);
     g_spawnItemButton = g_panel->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        MyGUI::IntCoord(184, 454, 156, 28),
+        MyGUI::IntCoord(184, 540, 156, 28),
         MyGUI::Align::Default);
     g_dangerousSectionText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
@@ -4569,7 +4752,7 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_statusText = g_panel->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(20, 514, kPanelWidth - 40, 18),
+        MyGUI::IntCoord(20, 596, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
 
     if (!HasAllPanelWidgets())
