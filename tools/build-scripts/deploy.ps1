@@ -27,6 +27,73 @@ Initialize-KenshiScriptTiming
 $ctx = Initialize-KenshiScriptContext -InvocationPath $MyInvocation.MyCommand.Path
 $resolved = Resolve-KenshiBuildContext -BoundParameters $PSBoundParameters -RepoDir $ctx.RepoDir -ModName $ModName -ProjectFileName $ProjectFileName -OutputSubdir $OutputSubdir -DllName $DllName -ModFileName $ModFileName -ConfigFileName $ConfigFileName -KenshiPath $KenshiPath -Configuration $Configuration -Platform $Platform
 
+function Enable-DeveloperModeInModConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if (-not (Test-Path $Path)) {
+        Write-Host "WARNING: mod-config.json not found for developer-mode injection: $Path" -ForegroundColor Yellow
+        return
+    }
+
+    try {
+        $config = Get-Content -Path $Path -Raw | ConvertFrom-Json
+        if (-not ($config.PSObject.Properties.Name -contains "developer_mode")) {
+            $config | Add-Member -MemberType NoteProperty -Name developer_mode -Value $true
+        } else {
+            $config.developer_mode = $true
+        }
+
+        $config | ConvertTo-Json -Depth 8 | Set-Content -Path $Path
+        Write-Host "Enabled developer_mode in deploy directory." -ForegroundColor Gray
+    } catch {
+        Write-Host "WARNING: Failed to enable developer_mode in $Path. Details: $_" -ForegroundColor Yellow
+    }
+}
+
+function Get-ImportedBoostRuntimeDllNames {
+    param(
+        [Parameter(Mandatory = $true)][string]$DllPath
+    )
+
+    if (-not (Test-Path $DllPath)) {
+        return @()
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($DllPath)
+    if (-not $bytes -or $bytes.Length -eq 0) {
+        return @()
+    }
+
+    $matches = @{}
+    $buffer = New-Object System.Collections.Generic.List[byte]
+
+    foreach ($value in $bytes) {
+        if ($value -ge 32 -and $value -le 126) {
+            $buffer.Add($value)
+            continue
+        }
+
+        if ($buffer.Count -gt 0) {
+            $text = [System.Text.Encoding]::ASCII.GetString($buffer.ToArray())
+            if ($text -match '^boost_[A-Za-z0-9_-]+\.dll$') {
+                $null = $matches[$text.ToLowerInvariant()] = $text
+            }
+            $buffer.Clear()
+        }
+    }
+
+    if ($buffer.Count -gt 0) {
+        $text = [System.Text.Encoding]::ASCII.GetString($buffer.ToArray())
+        if ($text -match '^boost_[A-Za-z0-9_-]+\.dll$') {
+            $null = $matches[$text.ToLowerInvariant()] = $text
+        }
+    }
+
+    return @($matches.GetEnumerator() | Sort-Object Name | ForEach-Object { $_.Value } | Select-Object -Unique)
+}
+
 Write-Host "=== $($resolved.ModName) Deploy ===" -ForegroundColor Cyan
 Write-Host "DLL Source:       $($resolved.DllPath)" -ForegroundColor Gray
 Write-Host "Kenshi Path:      $($resolved.KenshiPath)" -ForegroundColor Gray
@@ -100,6 +167,7 @@ if (-not (Test-Path $resolved.ModDir) -and (Test-Path $initTemplateScript)) {
 if (Test-Path $resolved.ModDir) {
     Copy-Item -Path "$($resolved.ModDir)\*" -Destination $resolved.KenshiModPath -Recurse -Force
     Write-Host "Copied mod files from: $($resolved.ModDir)" -ForegroundColor Gray
+    Enable-DeveloperModeInModConfig -Path (Join-Path $resolved.KenshiModPath "mod-config.json")
 } else {
     Write-Host "WARNING: Mod template directory not found: $($resolved.ModDir)" -ForegroundColor Yellow
     Write-Host "Only DLL will be copied." -ForegroundColor Yellow
@@ -125,7 +193,13 @@ if ($sourceInfo.Length -ne $destInfo.Length) {
 Write-Host "Copied DLL: $($resolved.DllPath) -> $destDllPath" -ForegroundColor Gray
 
 if ($env:BOOST_RUNTIME_DLL_SOURCE_DIR -and (Test-Path $env:BOOST_RUNTIME_DLL_SOURCE_DIR)) {
-    foreach ($boostDllName in @("boost_system-vc100-mt-1_60.dll", "boost_thread-vc100-mt-1_60.dll")) {
+    $boostRuntimeDllNames = Get-ImportedBoostRuntimeDllNames -DllPath $resolved.DllPath
+    $availableBoostRuntimeDllNames = @(
+        Get-ChildItem -Path $env:BOOST_RUNTIME_DLL_SOURCE_DIR -Filter "boost_*.dll" -File -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Name }
+    )
+
+    foreach ($boostDllName in $boostRuntimeDllNames) {
         $boostDllSource = Join-Path $env:BOOST_RUNTIME_DLL_SOURCE_DIR $boostDllName
         if (-not (Test-Path $boostDllSource)) {
             continue
@@ -138,6 +212,22 @@ if ($env:BOOST_RUNTIME_DLL_SOURCE_DIR -and (Test-Path $env:BOOST_RUNTIME_DLL_SOU
         $boostDllRootDest = Join-Path $resolved.KenshiPath $boostDllName
         Copy-Item -Path $boostDllSource -Destination $boostDllRootDest -Force
         Write-Host "Copied root runtime dependency: $boostDllSource -> $boostDllRootDest" -ForegroundColor Gray
+    }
+
+    if ($boostRuntimeDllNames.Count -eq 0) {
+        Write-Host "No Boost runtime DLL imports detected in $($resolved.DllName)." -ForegroundColor Gray
+    }
+
+    foreach ($boostDllName in $availableBoostRuntimeDllNames) {
+        if ($boostRuntimeDllNames -contains $boostDllName) {
+            continue
+        }
+
+        $staleBoostDllPath = Join-Path $resolved.KenshiModPath $boostDllName
+        if (Test-Path $staleBoostDllPath) {
+            Remove-Item -Path $staleBoostDllPath -Force
+            Write-Host "Removed unused mod-local runtime dependency: $staleBoostDllPath" -ForegroundColor Gray
+        }
     }
 }
 

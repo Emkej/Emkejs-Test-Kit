@@ -31,6 +31,36 @@ Initialize-KenshiScriptTiming
 $ctx = Initialize-KenshiScriptContext -InvocationPath $MyInvocation.MyCommand.Path
 $resolved = Resolve-KenshiBuildContext -BoundParameters $PSBoundParameters -RepoDir $ctx.RepoDir -ModName $ModName -ProjectFileName $ProjectFileName -OutputSubdir $OutputSubdir -DllName $DllName -ModFileName $ModFileName -ConfigFileName $ConfigFileName -KenshiPath $KenshiPath -Configuration $Configuration -Platform $Platform
 $versionFile = Join-Path $ctx.RepoDir "VERSION"
+
+function Remove-DeveloperModeConfigKeys {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    $config = Get-Content -Path $Path -Raw | ConvertFrom-Json
+    $removed = $false
+    foreach ($key in @(
+        "developer_mode",
+        "panel_header_title_font_height",
+        "panel_collapse_button_size",
+        "panel_close_button_size",
+        "panel_body_overlap"
+    )) {
+        if ($config.PSObject.Properties.Name -contains $key) {
+            $config.PSObject.Properties.Remove($key)
+            $removed = $true
+        }
+    }
+
+    if ($removed) {
+        $config | ConvertTo-Json -Depth 8 | Set-Content -Path $Path
+        Write-Host "Removed developer-only config keys from package staging." -ForegroundColor Gray
+    }
+}
 $deployScript = Join-Path $scriptDir "deploy.ps1"
 
 function Get-LocalPackagingStatus {
@@ -179,6 +209,13 @@ foreach ($fileName in $requiredFiles) {
         Write-Host "ERROR: Missing required file in package source: $filePath" -ForegroundColor Red
         return (Exit-KenshiScriptWithTimestamp -ExitCode 1)
     }
+}
+
+try {
+    Remove-DeveloperModeConfigKeys -Path (Join-Path $packageSourcePath "mod-config.json")
+} catch {
+    Write-Host "ERROR: Failed to sanitize mod-config.json for package. Details: $_" -ForegroundColor Red
+    return (Exit-KenshiScriptWithTimestamp -ExitCode 1)
 }
 
 if (-not $OutDir) {
