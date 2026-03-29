@@ -89,6 +89,9 @@ const float kMinimumLimbDamageAmount = 5.0f;
 const char* kTeleportDestinationLabel = "Test Spot";
 const Ogre::Vector3 kTeleportDestinationCenter(-56164.4f, 1605.11f, 20653.6f);
 const float kFloatChangeEpsilon = 0.001f;
+const int kSavedLocationRowHeight = 52;
+const int kSavedLocationRowGap = 8;
+const int kSavedLocationEmptyHeight = 18;
 // MyGUI expects the popup length as a visual height, not an item count.
 const int kInventoryItemDropdownMaxListLength = 224;
 const char* kModHubNamespaceId = "emkej.qol";
@@ -278,6 +281,59 @@ struct SavedLocation
     unsigned long long lastUsedUtc;
 };
 
+struct SavedLocationRowWidgets
+{
+    std::string locationId;
+    MyGUI::Widget* root;
+    MyGUI::TextBox* nameText;
+    MyGUI::Button* teleportButton;
+    MyGUI::Button* pinButton;
+    MyGUI::Button* renameButton;
+    MyGUI::Button* deleteButton;
+};
+
+struct CharacterPositionSnapshot
+{
+    CharacterPositionSnapshot()
+        : position(0.0f, 0.0f, 0.0f)
+        , rawPosition(0.0f, 0.0f, 0.0f)
+        , rawEntityPosition(0.0f, 0.0f, 0.0f)
+        , terrainHeight(0.0f)
+        , hasPosition(false)
+        , hasRawPosition(false)
+        , hasRawEntityPosition(false)
+        , hasTerrainHeight(false)
+    {
+    }
+
+    Ogre::Vector3 position;
+    Ogre::Vector3 rawPosition;
+    Ogre::Vector3 rawEntityPosition;
+    float terrainHeight;
+    bool hasPosition;
+    bool hasRawPosition;
+    bool hasRawEntityPosition;
+    bool hasTerrainHeight;
+};
+
+struct PendingTeleportProbe
+{
+    PendingTeleportProbe()
+        : character(0)
+        , expectedDestination(0.0f, 0.0f, 0.0f)
+        , ageTicks(0)
+        , active(false)
+    {
+    }
+
+    Character* character;
+    std::string actionId;
+    std::string targetName;
+    Ogre::Vector3 expectedDestination;
+    int ageTicks;
+    bool active;
+};
+
 typedef unsigned int InventorySearchCodepoint;
 typedef std::vector<InventorySearchCodepoint> InventorySearchText;
 
@@ -436,7 +492,8 @@ MyGUI::TextBox* g_saveLocationNameLabelText = 0;
 MyGUI::EditBox* g_saveLocationNameEdit = 0;
 MyGUI::Button* g_saveSelectedLocationButton = 0;
 MyGUI::TextBox* g_savedLocationsSectionText = 0;
-MyGUI::ListBox* g_savedLocationsList = 0;
+MyGUI::Widget* g_savedLocationsRowsRoot = 0;
+MyGUI::TextBox* g_savedLocationsEmptyText = 0;
 MyGUI::TextBox* g_inventorySectionText = 0;
 MyGUI::TextBox* g_moneyAmountLabelText = 0;
 MyGUI::EditBox* g_moneyAmountEdit = 0;
@@ -459,10 +516,13 @@ MyGUI::TextBox* g_statusText = 0;
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
 std::vector<SavedLocation> g_savedLocations;
+std::vector<SavedLocationRowWidgets> g_savedLocationRowWidgets;
+std::string g_savedLocationRenameId;
 bool g_inventoryFoodItemOptionsLoaded = false;
 PendingInventorySearchShortcut g_pendingInventorySearchShortcut;
 bool g_haveInventorySearchEditSnapshot = false;
 InventorySearchSnapshot g_inventorySearchEditSnapshot;
+PendingTeleportProbe g_pendingTeleportProbe;
 
 void (*PlayerInterface_updateUT_orig)(PlayerInterface*) = 0;
 void (*SaveManager_loadByInfo_orig)(SaveManager*, const SaveInfo&, bool) = 0;
@@ -470,7 +530,15 @@ void (*SaveManager_loadByName_orig)(SaveManager*, const std::string&) = 0;
 
 const char* ResolvePanelHeaderTitleFontName(int fontHeight);
 void ApplyPanelHeaderTitleFont();
+void ApplyPanelLayout();
+int GetSelectedCharacterCount(PlayerInterface* player);
+void ConfigureTextWidget(MyGUI::TextBox* widget);
 void SetActivePanelTab(PanelTab tab);
+void OnSavedLocationRowTeleportButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnSavedLocationRowPinButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnSavedLocationRowRenameButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnSavedLocationRowDeleteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+std::string SafeCharacterName(Character* target);
 
 bool IsSupportedVersion(KenshiLib::BinaryVersion& versionInfo)
 {
@@ -2475,6 +2543,17 @@ bool TryPersistSavedLocationsConfig(const std::vector<SavedLocation>& locations,
     return true;
 }
 
+unsigned long long GetCurrentUtcTimestamp()
+{
+    FILETIME fileTime;
+    GetSystemTimeAsFileTime(&fileTime);
+
+    ULARGE_INTEGER value;
+    value.LowPart = fileTime.dwLowDateTime;
+    value.HighPart = fileTime.dwHighDateTime;
+    return value.QuadPart;
+}
+
 void CopyModHubErrorMessage(char* err_buf, uint32_t err_buf_size, const char* message)
 {
     if (!err_buf || err_buf_size == 0u)
@@ -3283,7 +3362,7 @@ void UpdatePanelTabButtonCaptions()
     }
 }
 
-std::string BuildSavedLocationListItemLabel(const SavedLocation& location)
+std::string BuildSavedLocationDisplayName(const SavedLocation& location)
 {
     if (location.pinned)
     {
@@ -3293,27 +3372,147 @@ std::string BuildSavedLocationListItemLabel(const SavedLocation& location)
     return location.name;
 }
 
+void RefreshSaveLocationInputUi()
+{
+    if (g_saveLocationNameLabelText)
+    {
+        g_saveLocationNameLabelText->setCaption(g_savedLocationRenameId.empty() ? "Location Name" : "Rename Location");
+    }
+
+    if (g_saveSelectedLocationButton)
+    {
+        g_saveSelectedLocationButton->setCaption(g_savedLocationRenameId.empty() ? "Save Selected Location" : "Save Rename");
+    }
+}
+
+void ClearSavedLocationRenameState(bool clearInputText)
+{
+    g_savedLocationRenameId.clear();
+    RefreshSaveLocationInputUi();
+
+    if (clearInputText && g_saveLocationNameEdit)
+    {
+        g_saveLocationNameEdit->setOnlyText("");
+    }
+}
+
+void BeginSavedLocationRename(const SavedLocation& location)
+{
+    g_savedLocationRenameId = location.id;
+    RefreshSaveLocationInputUi();
+
+    if (g_saveLocationNameEdit)
+    {
+        g_saveLocationNameEdit->setOnlyText(location.name);
+    }
+}
+
+void DestroySavedLocationRowWidgets()
+{
+    MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+    if (gui)
+    {
+        for (size_t index = 0; index < g_savedLocationRowWidgets.size(); ++index)
+        {
+            if (g_savedLocationRowWidgets[index].root)
+            {
+                gui->destroyWidget(g_savedLocationRowWidgets[index].root);
+            }
+        }
+    }
+
+    g_savedLocationRowWidgets.clear();
+}
+
 void RefreshSavedLocationsListWidget()
 {
-    if (!g_savedLocationsList)
+    if (!g_savedLocationsRowsRoot || !g_savedLocationsEmptyText)
     {
         return;
     }
 
-    g_savedLocationsList->removeAllItems();
-    g_savedLocationsList->clearIndexSelected();
+    DestroySavedLocationRowWidgets();
 
+    const int rootWidth = g_savedLocationsRowsRoot->getWidth();
+    const bool hasSelectedCharacters = GetSelectedCharacterCount(g_lastPlayerInterface) > 0;
     if (g_savedLocations.empty())
     {
-        g_savedLocationsList->addItem("No saved locations yet");
-        g_savedLocationsList->setEnabled(false);
+        g_savedLocationsEmptyText->setCaption("No saved locations yet");
+        g_savedLocationsEmptyText->setVisible(true);
+        g_savedLocationsRowsRoot->setCoord(
+            MyGUI::IntCoord(
+                g_savedLocationsRowsRoot->getLeft(),
+                g_savedLocationsRowsRoot->getTop(),
+                rootWidth,
+                kSavedLocationEmptyHeight));
+        if (g_panel)
+        {
+            ApplyPanelLayout();
+        }
         return;
     }
 
-    g_savedLocationsList->setEnabled(true);
+    g_savedLocationsEmptyText->setVisible(false);
+
+    int rowTop = 0;
     for (size_t index = 0; index < g_savedLocations.size(); ++index)
     {
-        g_savedLocationsList->addItem(BuildSavedLocationListItemLabel(g_savedLocations[index]));
+        const SavedLocation& location = g_savedLocations[index];
+
+        SavedLocationRowWidgets rowWidgets;
+        rowWidgets.locationId = location.id;
+        rowWidgets.root = g_savedLocationsRowsRoot->createWidget<MyGUI::Widget>(
+            "PanelEmpty",
+            MyGUI::IntCoord(0, rowTop, rootWidth, kSavedLocationRowHeight),
+            MyGUI::Align::Default);
+        rowWidgets.nameText = rowWidgets.root->createWidget<MyGUI::TextBox>(
+            "Kenshi_TextboxStandardText",
+            MyGUI::IntCoord(0, 0, rootWidth, 18),
+            MyGUI::Align::Default);
+        rowWidgets.teleportButton = rowWidgets.root->createWidget<MyGUI::Button>(
+            "Kenshi_Button1",
+            MyGUI::IntCoord(0, 24, 86, 24),
+            MyGUI::Align::Default);
+        rowWidgets.pinButton = rowWidgets.root->createWidget<MyGUI::Button>(
+            "Kenshi_Button1",
+            MyGUI::IntCoord(92, 24, 64, 24),
+            MyGUI::Align::Default);
+        rowWidgets.renameButton = rowWidgets.root->createWidget<MyGUI::Button>(
+            "Kenshi_Button1",
+            MyGUI::IntCoord(162, 24, 70, 24),
+            MyGUI::Align::Default);
+        rowWidgets.deleteButton = rowWidgets.root->createWidget<MyGUI::Button>(
+            "Kenshi_Button1",
+            MyGUI::IntCoord(238, 24, 62, 24),
+            MyGUI::Align::Default);
+
+        ConfigureTextWidget(rowWidgets.nameText);
+        rowWidgets.nameText->setCaption(BuildSavedLocationDisplayName(location));
+        rowWidgets.teleportButton->setCaption("Teleport");
+        rowWidgets.teleportButton->setEnabled(hasSelectedCharacters);
+        rowWidgets.pinButton->setCaption(location.pinned ? "Unpin" : "Pin");
+        rowWidgets.renameButton->setCaption(g_savedLocationRenameId == location.id ? "Cancel" : "Rename");
+        rowWidgets.deleteButton->setCaption("Delete");
+
+        rowWidgets.teleportButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationRowTeleportButtonPressed);
+        rowWidgets.pinButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationRowPinButtonPressed);
+        rowWidgets.renameButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationRowRenameButtonPressed);
+        rowWidgets.deleteButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationRowDeleteButtonPressed);
+
+        g_savedLocationRowWidgets.push_back(rowWidgets);
+        rowTop += kSavedLocationRowHeight + kSavedLocationRowGap;
+    }
+
+    const int rootHeight = rowTop > 0 ? (rowTop - kSavedLocationRowGap) : kSavedLocationEmptyHeight;
+    g_savedLocationsRowsRoot->setCoord(
+        MyGUI::IntCoord(
+            g_savedLocationsRowsRoot->getLeft(),
+            g_savedLocationsRowsRoot->getTop(),
+            rootWidth,
+            rootHeight));
+    if (g_panel)
+    {
+        ApplyPanelLayout();
     }
 }
 
@@ -3356,6 +3555,28 @@ Character* TryGetPrimarySelectedCharacter(PlayerInterface* player)
     return 0;
 }
 
+void FocusCameraOnTeleportedSelection(PlayerInterface* player, const Ogre::Vector3& destination)
+{
+    if (!player)
+    {
+        return;
+    }
+
+    __try
+    {
+        if (player->selectedCharacter.isValid() && player->selectedCharacter.getCharacter() != 0)
+        {
+            player->focusCameraSelectedCharacter();
+            return;
+        }
+
+        player->focusCamera(destination);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
 bool TryGetCharacterPosition(Character* character, Ogre::Vector3* outPosition)
 {
     if (!character || !outPosition)
@@ -3363,16 +3584,415 @@ bool TryGetCharacterPosition(Character* character, Ogre::Vector3* outPosition)
         return false;
     }
 
+    CharacterPositionSnapshot snapshot;
+
     __try
     {
-        *outPosition = character->getPosition();
+        snapshot.position = character->getPosition();
+        snapshot.hasPosition = true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    __try
+    {
+        snapshot.rawPosition = character->_getRawPosition();
+        snapshot.hasRawPosition = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    __try
+    {
+        snapshot.rawEntityPosition = character->getRawEntityPosition();
+        snapshot.hasRawEntityPosition = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    __try
+    {
+        snapshot.terrainHeight = character->getTerrainHeightPosition();
+        snapshot.hasTerrainHeight = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    if (snapshot.hasRawEntityPosition)
+    {
+        *outPosition = snapshot.rawEntityPosition;
+        return true;
+    }
+
+    if (snapshot.hasPosition)
+    {
+        *outPosition = snapshot.position;
+        return true;
+    }
+
+    if (snapshot.hasRawPosition)
+    {
+        *outPosition = snapshot.rawPosition;
+        return true;
+    }
+
+    return false;
+}
+
+bool TryGetCharacterPositionSnapshot(Character* character, CharacterPositionSnapshot* outSnapshot)
+{
+    if (!character || !outSnapshot)
     {
         return false;
     }
 
-    return true;
+    CharacterPositionSnapshot snapshot;
+
+    __try
+    {
+        snapshot.position = character->getPosition();
+        snapshot.hasPosition = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    __try
+    {
+        snapshot.rawPosition = character->_getRawPosition();
+        snapshot.hasRawPosition = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    __try
+    {
+        snapshot.rawEntityPosition = character->getRawEntityPosition();
+        snapshot.hasRawEntityPosition = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    __try
+    {
+        snapshot.terrainHeight = character->getTerrainHeightPosition();
+        snapshot.hasTerrainHeight = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    *outSnapshot = snapshot;
+    return snapshot.hasPosition
+        || snapshot.hasRawPosition
+        || snapshot.hasRawEntityPosition;
+}
+
+bool TryGetCharacterTeleportReferencePosition(
+    Character* character,
+    bool useSpawnValidation,
+    Ogre::Vector3* outPosition,
+    const char** outSourceLabel)
+{
+    if (outSourceLabel)
+    {
+        *outSourceLabel = "unavailable";
+    }
+
+    if (!character || !outPosition)
+    {
+        return false;
+    }
+
+    CharacterPositionSnapshot snapshot;
+    if (!TryGetCharacterPositionSnapshot(character, &snapshot))
+    {
+        return false;
+    }
+
+    if (!useSpawnValidation)
+    {
+        if (snapshot.hasRawEntityPosition)
+        {
+            *outPosition = snapshot.rawEntityPosition;
+            if (outSourceLabel)
+            {
+                *outSourceLabel = "raw_entity";
+            }
+            return true;
+        }
+    }
+
+    if (snapshot.hasPosition)
+    {
+        *outPosition = snapshot.position;
+        if (outSourceLabel)
+        {
+            *outSourceLabel = "position";
+        }
+        return true;
+    }
+
+    if (snapshot.hasRawEntityPosition)
+    {
+        *outPosition = snapshot.rawEntityPosition;
+        if (outSourceLabel)
+        {
+            *outSourceLabel = "raw_entity";
+        }
+        return true;
+    }
+
+    if (snapshot.hasRawPosition)
+    {
+        *outPosition = snapshot.rawPosition;
+        if (outSourceLabel)
+        {
+            *outSourceLabel = "raw";
+        }
+        return true;
+    }
+
+    return false;
+}
+
+void LogSavedLocationPositionInvestigation(
+    const char* actionId,
+    const std::string& locationName,
+    const std::string& targetName,
+    const CharacterPositionSnapshot& snapshot,
+    const Ogre::Vector3& selectedPosition,
+    const char* selectedSource)
+{
+    if (!g_developerMode)
+    {
+        return;
+    }
+
+    std::stringstream line;
+    line << "[investigate][saved_location] action=\"" << actionId << "\""
+         << " location_name=\"" << SanitizeLogValue(locationName) << "\""
+         << " target_name=\"" << SanitizeLogValue(targetName) << "\""
+         << " selected_source=\"" << SanitizeLogValue(selectedSource ? selectedSource : "unknown") << "\""
+         << " selected_x=" << selectedPosition.x
+         << " selected_y=" << selectedPosition.y
+         << " selected_z=" << selectedPosition.z;
+    if (snapshot.hasPosition)
+    {
+        line << " position_x=" << snapshot.position.x
+             << " position_y=" << snapshot.position.y
+             << " position_z=" << snapshot.position.z;
+    }
+    if (snapshot.hasRawEntityPosition)
+    {
+        line << " raw_entity_x=" << snapshot.rawEntityPosition.x
+             << " raw_entity_y=" << snapshot.rawEntityPosition.y
+             << " raw_entity_z=" << snapshot.rawEntityPosition.z;
+    }
+    if (snapshot.hasRawPosition)
+    {
+        line << " raw_x=" << snapshot.rawPosition.x
+             << " raw_y=" << snapshot.rawPosition.y
+             << " raw_z=" << snapshot.rawPosition.z;
+    }
+    if (snapshot.hasTerrainHeight)
+    {
+        line << " terrain_height=" << snapshot.terrainHeight;
+    }
+    LogInfoLine(line.str());
+}
+
+void LogTeleportApplyInvestigation(
+    const char* actionId,
+    Character* character,
+    const Ogre::Vector3& referencePosition,
+    const char* referenceSource,
+    const Ogre::Vector3& destination,
+    const Ogre::Vector3& teleportInput,
+    bool useAbsoluteTeleportInput,
+    const CharacterPositionSnapshot& beforeSnapshot,
+    const CharacterPositionSnapshot& afterSnapshot)
+{
+    if (!g_developerMode)
+    {
+        return;
+    }
+
+    std::stringstream line;
+    line << "[investigate][teleport_apply] action=\"" << actionId << "\""
+         << " target_name=\"" << SanitizeLogValue(SafeCharacterName(character)) << "\""
+         << " reference_source=\"" << SanitizeLogValue(referenceSource ? referenceSource : "unknown") << "\""
+         << " reference_x=" << referencePosition.x
+         << " reference_y=" << referencePosition.y
+         << " reference_z=" << referencePosition.z
+         << " destination_x=" << destination.x
+         << " destination_y=" << destination.y
+         << " destination_z=" << destination.z
+         << " input_mode=\"" << (useAbsoluteTeleportInput ? "absolute" : "delta") << "\""
+         << " teleport_input_x=" << teleportInput.x
+         << " teleport_input_y=" << teleportInput.y
+         << " teleport_input_z=" << teleportInput.z
+         << " move_by_x=" << (destination.x - referencePosition.x)
+         << " move_by_y=" << (destination.y - referencePosition.y)
+         << " move_by_z=" << (destination.z - referencePosition.z);
+    if (beforeSnapshot.hasPosition)
+    {
+        line << " before_position_x=" << beforeSnapshot.position.x
+             << " before_position_y=" << beforeSnapshot.position.y
+             << " before_position_z=" << beforeSnapshot.position.z;
+    }
+    if (beforeSnapshot.hasRawEntityPosition)
+    {
+        line << " before_raw_entity_x=" << beforeSnapshot.rawEntityPosition.x
+             << " before_raw_entity_y=" << beforeSnapshot.rawEntityPosition.y
+             << " before_raw_entity_z=" << beforeSnapshot.rawEntityPosition.z;
+    }
+    if (afterSnapshot.hasPosition)
+    {
+        line << " after_position_x=" << afterSnapshot.position.x
+             << " after_position_y=" << afterSnapshot.position.y
+             << " after_position_z=" << afterSnapshot.position.z;
+    }
+    if (afterSnapshot.hasRawEntityPosition)
+    {
+        line << " after_raw_entity_x=" << afterSnapshot.rawEntityPosition.x
+             << " after_raw_entity_y=" << afterSnapshot.rawEntityPosition.y
+             << " after_raw_entity_z=" << afterSnapshot.rawEntityPosition.z;
+    }
+    LogInfoLine(line.str());
+}
+
+void ClearPendingTeleportProbe()
+{
+    g_pendingTeleportProbe = PendingTeleportProbe();
+}
+
+bool ShouldSamplePendingTeleportProbeAtTick(int ageTicks)
+{
+    return ageTicks == 1
+        || ageTicks == 5
+        || ageTicks == 20
+        || ageTicks == 60;
+}
+
+void ArmPendingTeleportProbe(
+    const char* actionId,
+    Character* character,
+    const Ogre::Vector3& expectedDestination)
+{
+    if (!g_developerMode || !character)
+    {
+        return;
+    }
+
+    g_pendingTeleportProbe = PendingTeleportProbe();
+    g_pendingTeleportProbe.character = character;
+    g_pendingTeleportProbe.actionId = actionId ? actionId : "";
+    g_pendingTeleportProbe.targetName = SafeCharacterName(character);
+    g_pendingTeleportProbe.expectedDestination = expectedDestination;
+    g_pendingTeleportProbe.active = true;
+
+    std::stringstream line;
+    line << "[investigate][teleport_probe] action=\""
+         << SanitizeLogValue(g_pendingTeleportProbe.actionId)
+         << "\" phase=\"armed\""
+         << " target_name=\"" << SanitizeLogValue(g_pendingTeleportProbe.targetName) << "\""
+         << " expected_x=" << expectedDestination.x
+         << " expected_y=" << expectedDestination.y
+         << " expected_z=" << expectedDestination.z;
+    LogInfoLine(line.str());
+}
+
+void TickPendingTeleportProbe()
+{
+    if (!g_pendingTeleportProbe.active)
+    {
+        return;
+    }
+
+    if (!g_developerMode)
+    {
+        ClearPendingTeleportProbe();
+        return;
+    }
+
+    ++g_pendingTeleportProbe.ageTicks;
+    if (!ShouldSamplePendingTeleportProbeAtTick(g_pendingTeleportProbe.ageTicks))
+    {
+        return;
+    }
+
+    CharacterPositionSnapshot snapshot;
+    if (!TryGetCharacterPositionSnapshot(g_pendingTeleportProbe.character, &snapshot))
+    {
+        std::stringstream line;
+        line << "[investigate][teleport_probe] action=\""
+             << SanitizeLogValue(g_pendingTeleportProbe.actionId)
+             << "\" phase=\"sample_failed\""
+             << " tick=" << g_pendingTeleportProbe.ageTicks
+             << " target_name=\"" << SanitizeLogValue(g_pendingTeleportProbe.targetName) << "\"";
+        LogInfoLine(line.str());
+
+        if (g_pendingTeleportProbe.ageTicks >= 60)
+        {
+            ClearPendingTeleportProbe();
+        }
+        return;
+    }
+
+    std::stringstream line;
+    line << "[investigate][teleport_probe] action=\""
+         << SanitizeLogValue(g_pendingTeleportProbe.actionId)
+         << "\" phase=\"sample\""
+         << " tick=" << g_pendingTeleportProbe.ageTicks
+         << " target_name=\"" << SanitizeLogValue(g_pendingTeleportProbe.targetName) << "\""
+         << " expected_x=" << g_pendingTeleportProbe.expectedDestination.x
+         << " expected_y=" << g_pendingTeleportProbe.expectedDestination.y
+         << " expected_z=" << g_pendingTeleportProbe.expectedDestination.z;
+    if (snapshot.hasPosition)
+    {
+        line << " position_x=" << snapshot.position.x
+             << " position_y=" << snapshot.position.y
+             << " position_z=" << snapshot.position.z
+             << " position_delta_x=" << (snapshot.position.x - g_pendingTeleportProbe.expectedDestination.x)
+             << " position_delta_y=" << (snapshot.position.y - g_pendingTeleportProbe.expectedDestination.y)
+             << " position_delta_z=" << (snapshot.position.z - g_pendingTeleportProbe.expectedDestination.z);
+    }
+    if (snapshot.hasRawEntityPosition)
+    {
+        line << " raw_entity_x=" << snapshot.rawEntityPosition.x
+             << " raw_entity_y=" << snapshot.rawEntityPosition.y
+             << " raw_entity_z=" << snapshot.rawEntityPosition.z
+             << " raw_entity_delta_x=" << (snapshot.rawEntityPosition.x - g_pendingTeleportProbe.expectedDestination.x)
+             << " raw_entity_delta_y=" << (snapshot.rawEntityPosition.y - g_pendingTeleportProbe.expectedDestination.y)
+             << " raw_entity_delta_z=" << (snapshot.rawEntityPosition.z - g_pendingTeleportProbe.expectedDestination.z);
+    }
+    if (snapshot.hasRawPosition)
+    {
+        line << " raw_x=" << snapshot.rawPosition.x
+             << " raw_y=" << snapshot.rawPosition.y
+             << " raw_z=" << snapshot.rawPosition.z
+             << " raw_delta_x=" << (snapshot.rawPosition.x - g_pendingTeleportProbe.expectedDestination.x)
+             << " raw_delta_y=" << (snapshot.rawPosition.y - g_pendingTeleportProbe.expectedDestination.y)
+             << " raw_delta_z=" << (snapshot.rawPosition.z - g_pendingTeleportProbe.expectedDestination.z);
+    }
+    if (snapshot.hasTerrainHeight)
+    {
+        line << " terrain_height=" << snapshot.terrainHeight
+             << " terrain_delta_y=" << (snapshot.terrainHeight - g_pendingTeleportProbe.expectedDestination.y);
+    }
+    LogInfoLine(line.str());
+
+    if (g_pendingTeleportProbe.ageTicks >= 60)
+    {
+        ClearPendingTeleportProbe();
+    }
 }
 
 std::string NormalizeSavedLocationName(const std::string& name)
@@ -3390,6 +4010,33 @@ bool DoesSavedLocationNameExist(const std::vector<SavedLocation>& locations, con
 
     for (size_t index = 0; index < locations.size(); ++index)
     {
+        if (NormalizeSavedLocationName(locations[index].name) == normalizedCandidate)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool DoesSavedLocationNameExistExcludingId(
+    const std::vector<SavedLocation>& locations,
+    const std::string& candidateName,
+    const std::string& excludedLocationId)
+{
+    const std::string normalizedCandidate = NormalizeSavedLocationName(candidateName);
+    if (normalizedCandidate.empty())
+    {
+        return false;
+    }
+
+    for (size_t index = 0; index < locations.size(); ++index)
+    {
+        if (locations[index].id == excludedLocationId)
+        {
+            continue;
+        }
+
         if (NormalizeSavedLocationName(locations[index].name) == normalizedCandidate)
         {
             return true;
@@ -3426,6 +4073,67 @@ std::string BuildNextSavedLocationId(const std::vector<SavedLocation>& locations
     while (DoesSavedLocationIdExist(locations, candidateId));
 
     return candidateId;
+}
+
+size_t FindSavedLocationIndexById(const std::vector<SavedLocation>& locations, const std::string& locationId)
+{
+    for (size_t index = 0; index < locations.size(); ++index)
+    {
+        if (locations[index].id == locationId)
+        {
+            return index;
+        }
+    }
+
+    return locations.size();
+}
+
+SavedLocationRowWidgets* TryFindSavedLocationRowWidgets(MyGUI::Widget* widget)
+{
+    if (!widget)
+    {
+        return 0;
+    }
+
+    for (size_t index = 0; index < g_savedLocationRowWidgets.size(); ++index)
+    {
+        SavedLocationRowWidgets& rowWidgets = g_savedLocationRowWidgets[index];
+        if (widget == rowWidgets.teleportButton
+            || widget == rowWidgets.pinButton
+            || widget == rowWidgets.renameButton
+            || widget == rowWidgets.deleteButton)
+        {
+            return &rowWidgets;
+        }
+    }
+
+    return 0;
+}
+
+bool TryGetSavedLocationFromRowWidget(MyGUI::Widget* widget, size_t* indexOut, SavedLocation* locationOut)
+{
+    SavedLocationRowWidgets* rowWidgets = TryFindSavedLocationRowWidgets(widget);
+    if (!rowWidgets)
+    {
+        return false;
+    }
+
+    const size_t selectedIndex = FindSavedLocationIndexById(g_savedLocations, rowWidgets->locationId);
+    if (selectedIndex >= g_savedLocations.size())
+    {
+        return false;
+    }
+
+    if (indexOut)
+    {
+        *indexOut = selectedIndex;
+    }
+    if (locationOut)
+    {
+        *locationOut = g_savedLocations[selectedIndex];
+    }
+
+    return true;
 }
 
 void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
@@ -3465,7 +4173,7 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_saveLocationNameEdit, teleportVisible);
     SetWidgetVisible(g_saveSelectedLocationButton, teleportVisible);
     SetWidgetVisible(g_savedLocationsSectionText, teleportVisible);
-    SetWidgetVisible(g_savedLocationsList, teleportVisible);
+    SetWidgetVisible(g_savedLocationsRowsRoot, teleportVisible);
 
     SetWidgetVisible(g_inventorySectionText, false);
     SetWidgetVisible(g_moneyAmountLabelText, inventoryVisible);
@@ -3672,7 +4380,7 @@ int GetActivePanelContentBottomInBodyCoords()
     switch (g_activePanelTab)
     {
     case PanelTab_Teleport:
-        return GetWidgetBottom(g_savedLocationsList, 534 - bodyTop);
+        return GetWidgetBottom(g_savedLocationsRowsRoot, 484 - bodyTop);
     case PanelTab_Inventory:
         return GetWidgetBottom(g_spawnItemButton, 608 - bodyTop);
     case PanelTab_Health:
@@ -4122,7 +4830,8 @@ void ResetPanelWidgetPointers()
     g_saveLocationNameEdit = 0;
     g_saveSelectedLocationButton = 0;
     g_savedLocationsSectionText = 0;
-    g_savedLocationsList = 0;
+    g_savedLocationsRowsRoot = 0;
+    g_savedLocationsEmptyText = 0;
     g_inventorySectionText = 0;
     g_moneyAmountLabelText = 0;
     g_moneyAmountEdit = 0;
@@ -4141,6 +4850,8 @@ void ResetPanelWidgetPointers()
     g_dangerousSectionText = 0;
     g_forceDyingButton = 0;
     g_statusText = 0;
+    g_savedLocationRowWidgets.clear();
+    g_savedLocationRenameId.clear();
 }
 
 void DestroyPanel()
@@ -5623,7 +6334,15 @@ void SetSelectionActionButtonsEnabled(bool enabled)
 
     if (g_saveSelectedLocationButton)
     {
-        g_saveSelectedLocationButton->setEnabled(enabled);
+        g_saveSelectedLocationButton->setEnabled(enabled || !g_savedLocationRenameId.empty());
+    }
+
+    for (size_t index = 0; index < g_savedLocationRowWidgets.size(); ++index)
+    {
+        if (g_savedLocationRowWidgets[index].teleportButton)
+        {
+            g_savedLocationRowWidgets[index].teleportButton->setEnabled(enabled);
+        }
     }
 }
 
@@ -5668,7 +6387,15 @@ void UpdateSelectionActionButtons(PlayerInterface* player)
 
     if (g_saveSelectedLocationButton)
     {
-        g_saveSelectedLocationButton->setEnabled(HasPrimarySelectedCharacter(player));
+        g_saveSelectedLocationButton->setEnabled(!g_savedLocationRenameId.empty() || HasPrimarySelectedCharacter(player));
+    }
+
+    for (size_t index = 0; index < g_savedLocationRowWidgets.size(); ++index)
+    {
+        if (g_savedLocationRowWidgets[index].teleportButton)
+        {
+            g_savedLocationRowWidgets[index].teleportButton->setEnabled(hasSelectedCharacters);
+        }
     }
 }
 
@@ -5809,6 +6536,40 @@ void LogActionRequested(const char* actionId)
                   << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
     }
     LogInfoLine(requested.str());
+}
+
+void LogTeleportInvestigation(
+    const char* actionId,
+    const std::string& locationName,
+    const Ogre::Vector3& requestedDestination,
+    const Ogre::Vector3& resolvedDestination,
+    bool validSpawnFound)
+{
+    if (!g_developerMode)
+    {
+        return;
+    }
+
+    const bool destinationAdjusted =
+        requestedDestination.x != resolvedDestination.x
+        || requestedDestination.y != resolvedDestination.y
+        || requestedDestination.z != resolvedDestination.z;
+
+    std::stringstream line;
+    line << "[investigate][teleport] action=\"" << actionId << "\""
+         << " location_name=\"" << SanitizeLogValue(locationName) << "\""
+         << " requested_x=" << requestedDestination.x
+         << " requested_y=" << requestedDestination.y
+         << " requested_z=" << requestedDestination.z
+         << " resolved_x=" << resolvedDestination.x
+         << " resolved_y=" << resolvedDestination.y
+         << " resolved_z=" << resolvedDestination.z
+         << " valid_spawn_found=" << (validSpawnFound ? "true" : "false")
+         << " destination_adjusted=" << (destinationAdjusted ? "true" : "false")
+         << " delta_x=" << (resolvedDestination.x - requestedDestination.x)
+         << " delta_y=" << (resolvedDestination.y - requestedDestination.y)
+         << " delta_z=" << (resolvedDestination.z - requestedDestination.z);
+    LogInfoLine(line.str());
 }
 
 bool TryForceUnconscious(Character* target, bool alreadyUnconscious, float* knockoutTimerOut)
@@ -6446,9 +7207,14 @@ bool TryApplyLimbDamage(
 
 bool TryTeleportSelectedCharactersToCamera(
     PlayerInterface* player,
+    const char* actionId,
+    const Ogre::Vector3& destinationCenter,
+    bool useSpawnValidation,
     int* selectedCountOut,
     int* teleportedCountOut,
-    Ogre::Vector3* destinationCenterOut)
+    Ogre::Vector3* requestedDestinationOut,
+    Ogre::Vector3* resolvedDestinationOut,
+    bool* validSpawnFoundOut)
 {
     if (selectedCountOut)
     {
@@ -6458,12 +7224,20 @@ bool TryTeleportSelectedCharactersToCamera(
     {
         *teleportedCountOut = 0;
     }
-    if (destinationCenterOut)
+    if (requestedDestinationOut)
     {
-        *destinationCenterOut = Ogre::Vector3(0.0f, 0.0f, 0.0f);
+        *requestedDestinationOut = Ogre::Vector3(0.0f, 0.0f, 0.0f);
+    }
+    if (resolvedDestinationOut)
+    {
+        *resolvedDestinationOut = Ogre::Vector3(0.0f, 0.0f, 0.0f);
+    }
+    if (validSpawnFoundOut)
+    {
+        *validSpawnFoundOut = false;
     }
 
-    if (!player || !ou)
+    if (!player || (useSpawnValidation && !ou))
     {
         return false;
     }
@@ -6495,23 +7269,40 @@ bool TryTeleportSelectedCharactersToCamera(
             *selectedCountOut = selectedCharacterCount;
         }
 
-        const Ogre::Vector3 destinationCenter = kTeleportDestinationCenter;
-        if (destinationCenterOut)
+        if (requestedDestinationOut)
         {
-            *destinationCenterOut = destinationCenter;
+            *requestedDestinationOut = destinationCenter;
         }
 
         Ogre::Vector3 resolvedDestination = destinationCenter;
-        if (ou)
+        bool validSpawnFound = false;
+        if (!useSpawnValidation)
+        {
+            if (ou)
+            {
+                ou->fixNaNPosition(resolvedDestination);
+            }
+        }
+        else if (ou)
         {
             Ogre::Vector3 validatedDestination = resolvedDestination;
             if (ou->findValidSpawnPos(validatedDestination, resolvedDestination))
             {
                 resolvedDestination = validatedDestination;
+                validSpawnFound = true;
             }
+        }
+        if (resolvedDestinationOut)
+        {
+            *resolvedDestinationOut = resolvedDestination;
+        }
+        if (validSpawnFoundOut)
+        {
+            *validSpawnFoundOut = validSpawnFound;
         }
 
         int teleportedCount = 0;
+        bool loggedTeleportApply = false;
 
         ogre_unordered_set<hand>::type::const_iterator teleportIt = selectedCharacters.begin();
         for (; teleportIt != selectedCharacters.end(); ++teleportIt)
@@ -6522,8 +7313,50 @@ bool TryTeleportSelectedCharactersToCamera(
                 continue;
             }
 
-            character->teleport(resolvedDestination - character->getPosition(), character->getOrientation());
+            Ogre::Vector3 referencePosition(0.0f, 0.0f, 0.0f);
+            const char* referenceSource = "position";
+            if (!TryGetCharacterTeleportReferencePosition(
+                    character,
+                    useSpawnValidation,
+                    &referencePosition,
+                    &referenceSource))
+            {
+                referencePosition = character->getPosition();
+                referenceSource = "position";
+            }
+
+            CharacterPositionSnapshot beforeSnapshot;
+            const bool capturedBeforeSnapshot =
+                g_developerMode && !loggedTeleportApply && TryGetCharacterPositionSnapshot(character, &beforeSnapshot);
+
+            const bool useAbsoluteTeleportInput = !useSpawnValidation;
+            const Ogre::Vector3 teleportInput =
+                useAbsoluteTeleportInput ? resolvedDestination : (resolvedDestination - referencePosition);
+            character->teleport(teleportInput, character->getOrientation());
             character->setRagdollNavmeshSafePos();
+
+            if (g_developerMode && !loggedTeleportApply)
+            {
+                CharacterPositionSnapshot afterSnapshot;
+                if (TryGetCharacterPositionSnapshot(character, &afterSnapshot))
+                {
+                    LogTeleportApplyInvestigation(
+                        actionId,
+                        character,
+                        referencePosition,
+                        referenceSource,
+                        resolvedDestination,
+                        teleportInput,
+                        useAbsoluteTeleportInput,
+                        capturedBeforeSnapshot ? beforeSnapshot : CharacterPositionSnapshot(),
+                        afterSnapshot);
+                    if (!useSpawnValidation)
+                    {
+                        ArmPendingTeleportProbe(actionId, character, resolvedDestination);
+                    }
+                    loggedTeleportApply = true;
+                }
+            }
             ++teleportedCount;
         }
 
@@ -6532,8 +7365,50 @@ bool TryTeleportSelectedCharactersToCamera(
             Character* character = player->selectedCharacter.getCharacter();
             if (character)
             {
-                character->teleport(resolvedDestination - character->getPosition(), character->getOrientation());
+                Ogre::Vector3 referencePosition(0.0f, 0.0f, 0.0f);
+                const char* referenceSource = "position";
+                if (!TryGetCharacterTeleportReferencePosition(
+                        character,
+                        useSpawnValidation,
+                        &referencePosition,
+                        &referenceSource))
+                {
+                    referencePosition = character->getPosition();
+                    referenceSource = "position";
+                }
+
+                CharacterPositionSnapshot beforeSnapshot;
+                const bool capturedBeforeSnapshot =
+                    g_developerMode && !loggedTeleportApply && TryGetCharacterPositionSnapshot(character, &beforeSnapshot);
+
+                const bool useAbsoluteTeleportInput = !useSpawnValidation;
+                const Ogre::Vector3 teleportInput =
+                    useAbsoluteTeleportInput ? resolvedDestination : (resolvedDestination - referencePosition);
+                character->teleport(teleportInput, character->getOrientation());
                 character->setRagdollNavmeshSafePos();
+
+                if (g_developerMode && !loggedTeleportApply)
+                {
+                    CharacterPositionSnapshot afterSnapshot;
+                    if (TryGetCharacterPositionSnapshot(character, &afterSnapshot))
+                    {
+                        LogTeleportApplyInvestigation(
+                            actionId,
+                            character,
+                            referencePosition,
+                            referenceSource,
+                            resolvedDestination,
+                            teleportInput,
+                            useAbsoluteTeleportInput,
+                            capturedBeforeSnapshot ? beforeSnapshot : CharacterPositionSnapshot(),
+                            afterSnapshot);
+                        if (!useSpawnValidation)
+                        {
+                            ArmPendingTeleportProbe(actionId, character, resolvedDestination);
+                        }
+                        loggedTeleportApply = true;
+                    }
+                }
                 ++teleportedCount;
             }
         }
@@ -6542,6 +7417,11 @@ bool TryTeleportSelectedCharactersToCamera(
         {
             *teleportedCountOut = teleportedCount;
         }
+
+        if (teleportedCount > 0)
+        {
+            FocusCameraOnTeleportedSelection(player, resolvedDestination);
+        }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -6549,6 +7429,26 @@ bool TryTeleportSelectedCharactersToCamera(
     }
 
     return true;
+}
+
+bool TryTeleportSelectedCharactersToCamera(
+    PlayerInterface* player,
+    int* selectedCountOut,
+    int* teleportedCountOut,
+    Ogre::Vector3* requestedDestinationOut,
+    Ogre::Vector3* resolvedDestinationOut,
+    bool* validSpawnFoundOut)
+{
+    return TryTeleportSelectedCharactersToCamera(
+        player,
+        "teleport_selected_to_test_spot",
+        kTeleportDestinationCenter,
+        true,
+        selectedCountOut,
+        teleportedCountOut,
+        requestedDestinationOut,
+        resolvedDestinationOut,
+        validSpawnFoundOut);
 }
 
 void ReportShellOnlyAction(const char* actionId, const char* actionLabel)
@@ -7484,12 +8384,16 @@ void OnTeleportSelectedToCameraButtonClicked(MyGUI::Widget*)
 
     int selectedCount = 0;
     int teleportedCount = 0;
-    Ogre::Vector3 destinationCenter(0.0f, 0.0f, 0.0f);
+    Ogre::Vector3 requestedDestination(0.0f, 0.0f, 0.0f);
+    Ogre::Vector3 resolvedDestination(0.0f, 0.0f, 0.0f);
+    bool validSpawnFound = false;
     if (!TryTeleportSelectedCharactersToCamera(
             g_lastPlayerInterface,
             &selectedCount,
             &teleportedCount,
-            &destinationCenter))
+            &requestedDestination,
+            &resolvedDestination,
+            &validSpawnFound))
     {
         LogInfoLine("event=testkit_action_result action=\"teleport_selected_to_test_spot\" success=false reason=\"apply_failed\"");
         SetStatusMessage(std::string("Teleport to ") + kTeleportDestinationLabel + " failed - apply path unavailable");
@@ -7503,14 +8407,30 @@ void OnTeleportSelectedToCameraButtonClicked(MyGUI::Widget*)
         return;
     }
 
+    const bool destinationAdjusted =
+        requestedDestination.x != resolvedDestination.x
+        || requestedDestination.y != resolvedDestination.y
+        || requestedDestination.z != resolvedDestination.z;
+    LogTeleportInvestigation(
+        "teleport_selected_to_test_spot",
+        kTeleportDestinationLabel,
+        requestedDestination,
+        resolvedDestination,
+        validSpawnFound);
+
     std::stringstream result;
     result << "event=testkit_action_result action=\"teleport_selected_to_test_spot\" success="
            << (teleportedCount > 0 ? "true" : "false")
            << " selected_count=" << selectedCount
            << " teleported_count=" << teleportedCount
-           << " destination_x=" << destinationCenter.x
-           << " destination_y=" << destinationCenter.y
-           << " destination_z=" << destinationCenter.z;
+           << " requested_x=" << requestedDestination.x
+           << " requested_y=" << requestedDestination.y
+           << " requested_z=" << requestedDestination.z
+           << " destination_x=" << resolvedDestination.x
+           << " destination_y=" << resolvedDestination.y
+           << " destination_z=" << resolvedDestination.z
+           << " valid_spawn_found=" << (validSpawnFound ? "true" : "false")
+           << " destination_adjusted=" << (destinationAdjusted ? "true" : "false");
     if (teleportedCount <= 0)
     {
         result << " reason=\"not_observed_after_apply\"";
@@ -7561,25 +8481,92 @@ void OnSaveLocationNameTextChanged(MyGUI::EditBox*)
 
 void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*)
 {
-    const char* actionId = "save_selected_location";
+    const bool renameMode = !g_savedLocationRenameId.empty();
+    const char* actionId = renameMode ? "rename_saved_location" : "save_selected_location";
     LogActionRequested(actionId);
 
     if (!g_saveLocationNameEdit)
     {
-        LogInfoLine("event=testkit_action_result action=\"save_selected_location\" success=false reason=\"missing_input_widget\"");
-        SetStatusMessage("Save Selected Location failed - name input unavailable");
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"missing_input_widget\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(std::string(renameMode ? "Rename Location" : "Save Selected Location") + " failed - name input unavailable");
         return;
     }
 
     const std::string locationName = TrimAscii(g_saveLocationNameEdit->getOnlyText().asUTF8());
     if (locationName.empty())
     {
-        LogInfoLine("event=testkit_action_result action=\"save_selected_location\" success=false reason=\"empty_name\"");
-        SetStatusMessage("Save Selected Location failed - enter a location name");
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"empty_name\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(std::string(renameMode ? "Rename Location" : "Save Selected Location") + " failed - enter a location name");
         return;
     }
 
     g_saveLocationNameEdit->setOnlyText(locationName);
+
+    if (renameMode)
+    {
+        const size_t locationIndex = FindSavedLocationIndexById(g_savedLocations, g_savedLocationRenameId);
+        if (locationIndex >= g_savedLocations.size())
+        {
+            std::stringstream result;
+            result << "event=testkit_action_result action=\"rename_saved_location\" success=false reason=\"missing_location\""
+                   << " location_id=\"" << SanitizeLogValue(g_savedLocationRenameId) << "\"";
+            LogInfoLine(result.str());
+            ClearSavedLocationRenameState(true);
+            RefreshSavedLocationsListWidget();
+            UpdateSelectionActionButtons(g_lastPlayerInterface);
+            SetStatusMessage("Rename Location failed - saved location no longer exists");
+            return;
+        }
+
+        if (DoesSavedLocationNameExistExcludingId(g_savedLocations, locationName, g_savedLocationRenameId))
+        {
+            std::stringstream result;
+            result << "event=testkit_action_result action=\"rename_saved_location\" success=false reason=\"duplicate_name\""
+                   << " location_id=\"" << SanitizeLogValue(g_savedLocationRenameId) << "\""
+                   << " location_name=\"" << SanitizeLogValue(locationName) << "\"";
+            LogInfoLine(result.str());
+            SetStatusMessage("Rename Location failed - name already exists");
+            return;
+        }
+
+        std::vector<SavedLocation> updatedLocations = g_savedLocations;
+        const std::string previousName = updatedLocations[locationIndex].name;
+        updatedLocations[locationIndex].name = locationName;
+        SortSavedLocationsForDisplay(&updatedLocations);
+
+        std::string persistError;
+        if (!TryPersistSavedLocationsConfig(updatedLocations, &persistError))
+        {
+            std::stringstream result;
+            result << "event=testkit_action_result action=\"rename_saved_location\" success=false reason=\""
+                   << persistError << "\""
+                   << " location_id=\"" << SanitizeLogValue(g_savedLocationRenameId) << "\""
+                   << " location_name=\"" << SanitizeLogValue(locationName) << "\"";
+            LogInfoLine(result.str());
+            SetStatusMessage("Rename Location failed - could not persist config");
+            return;
+        }
+
+        const std::string renamedLocationId = g_savedLocationRenameId;
+        g_savedLocations.swap(updatedLocations);
+        ClearSavedLocationRenameState(true);
+        RefreshSavedLocationsListWidget();
+        UpdateSelectionActionButtons(g_lastPlayerInterface);
+
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"rename_saved_location\" success=true"
+               << " location_id=\"" << SanitizeLogValue(renamedLocationId) << "\""
+               << " old_name=\"" << SanitizeLogValue(previousName) << "\""
+               << " new_name=\"" << SanitizeLogValue(locationName) << "\"";
+        LogInfoLine(result.str());
+
+        SetStatusMessage(std::string("Renamed location ") + previousName + " to " + locationName);
+        return;
+    }
 
     if (DoesSavedLocationNameExist(g_savedLocations, locationName))
     {
@@ -7606,8 +8593,24 @@ void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*)
         return;
     }
 
+    CharacterPositionSnapshot positionSnapshot;
+    if (!TryGetCharacterPositionSnapshot(selectedCharacter, &positionSnapshot))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"save_selected_location\" success=false reason=\"position_read_failed\""
+               << " location_name=\"" << SanitizeLogValue(locationName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Save Selected Location failed - selected character position unavailable");
+        return;
+    }
+
     Ogre::Vector3 selectedPosition(0.0f, 0.0f, 0.0f);
-    if (!TryGetCharacterPosition(selectedCharacter, &selectedPosition))
+    const char* selectedSource = "unavailable";
+    if (!TryGetCharacterTeleportReferencePosition(
+            selectedCharacter,
+            false,
+            &selectedPosition,
+            &selectedSource))
     {
         std::stringstream result;
         result << "event=testkit_action_result action=\"save_selected_location\" success=false reason=\"position_read_failed\""
@@ -7617,6 +8620,13 @@ void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*)
         return;
     }
     const std::string targetName = SafeCharacterName(selectedCharacter);
+    LogSavedLocationPositionInvestigation(
+        "save_selected_location",
+        locationName,
+        targetName,
+        positionSnapshot,
+        selectedPosition,
+        selectedSource);
 
     std::vector<SavedLocation> updatedLocations = g_savedLocations;
     SavedLocation location;
@@ -7640,8 +8650,8 @@ void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*)
     }
 
     g_savedLocations.swap(updatedLocations);
+    ClearSavedLocationRenameState(true);
     RefreshSavedLocationsListWidget();
-    g_saveLocationNameEdit->setOnlyText("");
     UpdateSelectionActionButtons(g_lastPlayerInterface);
 
     std::stringstream result;
@@ -7667,6 +8677,342 @@ void OnSaveSelectedLocationButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseB
 
     MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
     OnSaveSelectedLocationButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnSavedLocationRowTeleportButtonClicked(MyGUI::Widget* sender)
+{
+    const char* actionId = "teleport_selected_to_saved_location";
+    LogActionRequested(actionId);
+
+    SavedLocation location;
+    size_t locationIndex = 0u;
+    if (!TryGetSavedLocationFromRowWidget(sender, &locationIndex, &location))
+    {
+        LogInfoLine("event=testkit_action_result action=\"teleport_selected_to_saved_location\" success=false reason=\"no_saved_location\"");
+        SetStatusMessage("Teleport failed - saved location row unavailable");
+        return;
+    }
+
+    if (!g_lastPlayerInterface)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"teleport_selected_to_saved_location\" success=false reason=\"no_player_interface\""
+               << " location_id=\"" << SanitizeLogValue(location.id) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(std::string("Teleport to ") + location.name + " failed - player interface unavailable");
+        return;
+    }
+
+    int selectedCount = 0;
+    int teleportedCount = 0;
+    Ogre::Vector3 requestedDestination(0.0f, 0.0f, 0.0f);
+    Ogre::Vector3 resolvedDestination(0.0f, 0.0f, 0.0f);
+    bool validSpawnFound = false;
+    if (!TryTeleportSelectedCharactersToCamera(
+            g_lastPlayerInterface,
+            "teleport_selected_to_saved_location",
+            location.position,
+            false,
+            &selectedCount,
+            &teleportedCount,
+            &requestedDestination,
+            &resolvedDestination,
+            &validSpawnFound))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"teleport_selected_to_saved_location\" success=false reason=\"apply_failed\""
+               << " location_id=\"" << SanitizeLogValue(location.id) << "\""
+               << " location_name=\"" << SanitizeLogValue(location.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(std::string("Teleport to ") + location.name + " failed - apply path unavailable");
+        return;
+    }
+
+    if (selectedCount <= 0)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"teleport_selected_to_saved_location\" success=false reason=\"no_selection\""
+               << " location_id=\"" << SanitizeLogValue(location.id) << "\""
+               << " location_name=\"" << SanitizeLogValue(location.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(std::string("No selected characters to teleport to ") + location.name);
+        return;
+    }
+
+    const bool destinationAdjusted =
+        requestedDestination.x != resolvedDestination.x
+        || requestedDestination.y != resolvedDestination.y
+        || requestedDestination.z != resolvedDestination.z;
+    LogTeleportInvestigation(
+        "teleport_selected_to_saved_location",
+        location.name,
+        requestedDestination,
+        resolvedDestination,
+        validSpawnFound);
+
+    if (teleportedCount > 0)
+    {
+        std::vector<SavedLocation> updatedLocations = g_savedLocations;
+        if (locationIndex < updatedLocations.size())
+        {
+            updatedLocations[locationIndex].lastUsedUtc = GetCurrentUtcTimestamp();
+            SortSavedLocationsForDisplay(&updatedLocations);
+
+            std::string persistError;
+            if (TryPersistSavedLocationsConfig(updatedLocations, &persistError))
+            {
+                g_savedLocations.swap(updatedLocations);
+                RefreshSavedLocationsListWidget();
+                UpdateSelectionActionButtons(g_lastPlayerInterface);
+            }
+            else
+            {
+                std::stringstream persistLine;
+                persistLine << "event=testkit_saved_location_recent_persist_failed location_id=\""
+                            << SanitizeLogValue(location.id)
+                            << "\" reason=\"" << persistError << "\"";
+                LogWarnLine(persistLine.str());
+            }
+        }
+    }
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"teleport_selected_to_saved_location\" success="
+           << (teleportedCount > 0 ? "true" : "false")
+           << " location_id=\"" << SanitizeLogValue(location.id) << "\""
+           << " location_name=\"" << SanitizeLogValue(location.name) << "\""
+           << " selected_count=" << selectedCount
+           << " teleported_count=" << teleportedCount
+           << " requested_x=" << requestedDestination.x
+           << " requested_y=" << requestedDestination.y
+           << " requested_z=" << requestedDestination.z
+           << " destination_x=" << resolvedDestination.x
+           << " destination_y=" << resolvedDestination.y
+           << " destination_z=" << resolvedDestination.z
+           << " valid_spawn_found=" << (validSpawnFound ? "true" : "false")
+           << " destination_adjusted=" << (destinationAdjusted ? "true" : "false");
+    if (teleportedCount <= 0)
+    {
+        result << " reason=\"not_observed_after_apply\"";
+    }
+    LogInfoLine(result.str());
+
+    if (teleportedCount == selectedCount)
+    {
+        std::stringstream status;
+        status << "Teleported " << teleportedCount << " selected character(s) to " << location.name;
+        SetStatusMessage(status.str());
+    }
+    else if (teleportedCount > 0)
+    {
+        std::stringstream status;
+        status << "Teleported " << teleportedCount << " of " << selectedCount << " selected characters to "
+               << location.name;
+        SetStatusMessage(status.str());
+    }
+    else
+    {
+        SetStatusMessage(std::string("Teleport to ") + location.name + " requested - no selected characters moved");
+    }
+
+    UpdateTargetInspection(g_lastPlayerInterface);
+}
+
+void OnSavedLocationRowTeleportButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnSavedLocationRowTeleportButtonClicked(sender);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnSavedLocationRowPinButtonClicked(MyGUI::Widget* sender)
+{
+    const char* actionId = "toggle_saved_location_pin";
+    LogActionRequested(actionId);
+
+    SavedLocation location;
+    size_t locationIndex = 0u;
+    if (!TryGetSavedLocationFromRowWidget(sender, &locationIndex, &location))
+    {
+        LogInfoLine("event=testkit_action_result action=\"toggle_saved_location_pin\" success=false reason=\"no_saved_location\"");
+        SetStatusMessage("Pin failed - saved location row unavailable");
+        return;
+    }
+
+    std::vector<SavedLocation> updatedLocations = g_savedLocations;
+    const bool pinned = !updatedLocations[locationIndex].pinned;
+    updatedLocations[locationIndex].pinned = pinned;
+    SortSavedLocationsForDisplay(&updatedLocations);
+
+    std::string persistError;
+    if (!TryPersistSavedLocationsConfig(updatedLocations, &persistError))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"toggle_saved_location_pin\" success=false reason=\""
+               << persistError << "\""
+               << " location_id=\"" << SanitizeLogValue(location.id) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(std::string(location.pinned ? "Unpin" : "Pin") + " failed - could not persist config");
+        return;
+    }
+
+    g_savedLocations.swap(updatedLocations);
+    RefreshSavedLocationsListWidget();
+    UpdateSelectionActionButtons(g_lastPlayerInterface);
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"toggle_saved_location_pin\" success=true"
+           << " location_id=\"" << SanitizeLogValue(location.id) << "\""
+           << " location_name=\"" << SanitizeLogValue(location.name) << "\""
+           << " pinned=" << (pinned ? "true" : "false");
+    LogInfoLine(result.str());
+
+    SetStatusMessage(std::string(pinned ? "Pinned location " : "Unpinned location ") + location.name);
+}
+
+void OnSavedLocationRowPinButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnSavedLocationRowPinButtonClicked(sender);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnSavedLocationRowRenameButtonClicked(MyGUI::Widget* sender)
+{
+    SavedLocation location;
+    if (!TryGetSavedLocationFromRowWidget(sender, 0, &location))
+    {
+        LogInfoLine("event=testkit_action_result action=\"rename_saved_location\" success=false reason=\"no_saved_location\"");
+        SetStatusMessage("Rename Location failed - saved location row unavailable");
+        return;
+    }
+
+    if (g_savedLocationRenameId == location.id)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"rename_saved_location\" success=true mode=\"cancel\""
+               << " location_id=\"" << SanitizeLogValue(location.id) << "\"";
+        LogInfoLine(result.str());
+        ClearSavedLocationRenameState(true);
+        RefreshSavedLocationsListWidget();
+        UpdateSelectionActionButtons(g_lastPlayerInterface);
+        SetStatusMessage(std::string("Rename cancelled for ") + location.name);
+        return;
+    }
+
+    BeginSavedLocationRename(location);
+    RefreshSavedLocationsListWidget();
+    UpdateSelectionActionButtons(g_lastPlayerInterface);
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    if (inputManager && g_saveLocationNameEdit)
+    {
+        inputManager->setKeyFocusWidget(g_saveLocationNameEdit);
+    }
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"rename_saved_location\" success=true mode=\"begin\""
+           << " location_id=\"" << SanitizeLogValue(location.id) << "\""
+           << " location_name=\"" << SanitizeLogValue(location.name) << "\"";
+    LogInfoLine(result.str());
+    SetStatusMessage(std::string("Rename location ") + location.name + " and click Save Rename");
+}
+
+void OnSavedLocationRowRenameButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnSavedLocationRowRenameButtonClicked(sender);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnSavedLocationRowDeleteButtonClicked(MyGUI::Widget* sender)
+{
+    const char* actionId = "delete_saved_location";
+    LogActionRequested(actionId);
+
+    SavedLocation location;
+    size_t locationIndex = 0u;
+    if (!TryGetSavedLocationFromRowWidget(sender, &locationIndex, &location))
+    {
+        LogInfoLine("event=testkit_action_result action=\"delete_saved_location\" success=false reason=\"no_saved_location\"");
+        SetStatusMessage("Delete Location failed - saved location row unavailable");
+        return;
+    }
+
+    std::vector<SavedLocation> updatedLocations = g_savedLocations;
+    updatedLocations.erase(updatedLocations.begin() + locationIndex);
+
+    std::string persistError;
+    if (!TryPersistSavedLocationsConfig(updatedLocations, &persistError))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"delete_saved_location\" success=false reason=\""
+               << persistError << "\""
+               << " location_id=\"" << SanitizeLogValue(location.id) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Delete Location failed - could not persist config");
+        return;
+    }
+
+    const bool clearedRenameState = g_savedLocationRenameId == location.id;
+    g_savedLocations.swap(updatedLocations);
+    if (clearedRenameState)
+    {
+        ClearSavedLocationRenameState(true);
+    }
+    RefreshSavedLocationsListWidget();
+    UpdateSelectionActionButtons(g_lastPlayerInterface);
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"delete_saved_location\" success=true"
+           << " location_id=\"" << SanitizeLogValue(location.id) << "\""
+           << " location_name=\"" << SanitizeLogValue(location.name) << "\"";
+    LogInfoLine(result.str());
+
+    SetStatusMessage(std::string("Deleted location ") + location.name);
+}
+
+void OnSavedLocationRowDeleteButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnSavedLocationRowDeleteButtonClicked(sender);
 
     if (inputManager)
     {
@@ -8126,7 +9472,8 @@ bool HasAllPanelWidgets()
         && g_saveLocationNameEdit
         && g_saveSelectedLocationButton
         && g_savedLocationsSectionText
-        && g_savedLocationsList
+        && g_savedLocationsRowsRoot
+        && g_savedLocationsEmptyText
         && g_inventorySectionText
         && g_moneyAmountLabelText
         && g_moneyAmountEdit
@@ -8183,6 +9530,7 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_teleportSectionText);
     ConfigureTextWidget(g_saveLocationNameLabelText);
     ConfigureTextWidget(g_savedLocationsSectionText);
+    ConfigureTextWidget(g_savedLocationsEmptyText);
     ConfigureTextWidget(g_inventorySectionText);
     ConfigureTextWidget(g_moneyAmountLabelText);
     ConfigureTextWidget(g_spawnFoodSectionText);
@@ -8199,7 +9547,6 @@ void InitializePanelWidgets()
     ConfigureEditBoxWidget(g_itemQuantityEdit);
     ConfigureComboBoxWidget(g_itemCategoryDropdown);
     ConfigureComboBoxWidget(g_itemDropdown);
-    ConfigureListBoxWidget(g_savedLocationsList);
     ConfigureListBoxWidget(g_itemSearchResultsList);
 
     g_targetSectionText->setCaption("Target");
@@ -8235,7 +9582,8 @@ void InitializePanelWidgets()
     g_saveLocationNameEdit->setEditStatic(false);
     g_saveLocationNameEdit->setMaxTextLength(64);
     g_saveLocationNameEdit->setOnlyText("");
-    g_saveSelectedLocationButton->setCaption("Save Selected Location");
+    RefreshSaveLocationInputUi();
+    g_savedLocationsEmptyText->setCaption("No saved locations yet");
     RefreshSavedLocationsListWidget();
     g_moneyAmountEdit->setEditStatic(false);
     g_moneyAmountEdit->setMaxTextLength(10);
@@ -8491,9 +9839,13 @@ void CreatePanelWidgets()
         "Kenshi_TextboxPaintedText",
         BuildBodyCoord(14, 360, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
-    g_savedLocationsList = bodyParent->createWidget<MyGUI::ListBox>(
-        "Kenshi_ListBox",
-        BuildBodyCoord(20, 384, kPanelWidth - 40, 150),
+    g_savedLocationsRowsRoot = bodyParent->createWidget<MyGUI::Widget>(
+        "PanelEmpty",
+        BuildBodyCoord(20, 384, kPanelWidth - 40, kSavedLocationEmptyHeight),
+        MyGUI::Align::Default);
+    g_savedLocationsEmptyText = g_savedLocationsRowsRoot->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(0, 0, kPanelWidth - 40, kSavedLocationEmptyHeight),
         MyGUI::Align::Default);
     g_inventorySectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
@@ -8621,6 +9973,7 @@ void OnSaveLoadTransitionStart(const char* source)
     g_inventorySearchCtrlFPrevDown = false;
     g_lastStatusMessage = "Ready";
     ResetInventoryFoodItemOptions();
+    ClearPendingTeleportProbe();
     ResetTargetSnapshot(&g_lastTargetSnapshot);
     g_hasLastTargetSnapshot = false;
 }
@@ -8629,6 +9982,7 @@ void PlayerInterface_updateUT_hook(PlayerInterface* thisptr)
 {
     PlayerInterface_updateUT_orig(thisptr);
 
+    TickPendingTeleportProbe();
     TickModHubAttachRetry();
     TickPanelToggleHotkey();
     EnsurePanel(thisptr);
