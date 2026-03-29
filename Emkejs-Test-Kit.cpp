@@ -37,6 +37,7 @@
 
 #include <cctype>
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -81,6 +82,8 @@ const int kPanelHeaderButtonGap = 6;
 const int kPanelHeaderButtonRightPadding = 10;
 const DWORD kDangerArmTimeoutMs = 3000;
 const float kForceUnconsciousDurationSeconds = 30.0f;
+const int kDownedTeleportRestoreMinDelayTicks = 5;
+const int kDownedTeleportRestoreMaxDelayTicks = 20;
 const float kForceDyingBloodOffset = 8.0f;
 const float kForceDyingAliveBloodMargin = 1.0f;
 const float kProbablyDyingBloodMax = 50.0f;
@@ -316,11 +319,35 @@ struct CharacterPositionSnapshot
     bool hasTerrainHeight;
 };
 
-struct PendingTeleportProbe
+struct DownedTeleportState
 {
-    PendingTeleportProbe()
+    DownedTeleportState()
+        : active(false)
+        , proneState(PS_NORMAL)
+        , playerWantsMeToGetUp(false)
+        , crippled(false)
+        , unconscious(false)
+        , sub50KO(false)
+        , bloodlossTrauma(false)
+        , knockoutTimer(0.0f)
+    {
+    }
+
+    bool active;
+    ProneState proneState;
+    bool playerWantsMeToGetUp;
+    bool crippled;
+    bool unconscious;
+    bool sub50KO;
+    bool bloodlossTrauma;
+    float knockoutTimer;
+};
+
+struct PendingDownedTeleportRestore
+{
+    PendingDownedTeleportRestore()
         : character(0)
-        , expectedDestination(0.0f, 0.0f, 0.0f)
+        , destination(0.0f, 0.0f, 0.0f)
         , ageTicks(0)
         , active(false)
     {
@@ -329,7 +356,8 @@ struct PendingTeleportProbe
     Character* character;
     std::string actionId;
     std::string targetName;
-    Ogre::Vector3 expectedDestination;
+    DownedTeleportState state;
+    Ogre::Vector3 destination;
     int ageTicks;
     bool active;
 };
@@ -522,7 +550,7 @@ bool g_inventoryFoodItemOptionsLoaded = false;
 PendingInventorySearchShortcut g_pendingInventorySearchShortcut;
 bool g_haveInventorySearchEditSnapshot = false;
 InventorySearchSnapshot g_inventorySearchEditSnapshot;
-PendingTeleportProbe g_pendingTeleportProbe;
+std::vector<PendingDownedTeleportRestore> g_pendingDownedTeleportRestores;
 
 void (*PlayerInterface_updateUT_orig)(PlayerInterface*) = 0;
 void (*SaveManager_loadByInfo_orig)(SaveManager*, const SaveInfo&, bool) = 0;
@@ -539,6 +567,7 @@ void OnSavedLocationRowPinButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseBu
 void OnSavedLocationRowRenameButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSavedLocationRowDeleteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 std::string SafeCharacterName(Character* target);
+bool TryGetCharacterPositionSnapshot(Character* character, CharacterPositionSnapshot* outSnapshot);
 
 bool IsSupportedVersion(KenshiLib::BinaryVersion& versionInfo)
 {
@@ -3577,6 +3606,465 @@ void FocusCameraOnTeleportedSelection(PlayerInterface* player, const Ogre::Vecto
     }
 }
 
+bool AreFloatsNearlyEqual(float left, float right)
+{
+    return std::fabs(left - right) <= kFloatChangeEpsilon;
+}
+
+bool AreVectorsNearlyEqual(const Ogre::Vector3& left, const Ogre::Vector3& right)
+{
+    return AreFloatsNearlyEqual(left.x, right.x)
+        && AreFloatsNearlyEqual(left.y, right.y)
+        && AreFloatsNearlyEqual(left.z, right.z);
+}
+
+const char* GetProneStateLabel(ProneState proneState)
+{
+    switch (proneState)
+    {
+    case PS_NORMAL:
+        return "normal";
+    case PS_KO:
+        return "ko";
+    case PS_PLAYING_DEAD:
+        return "playing_dead";
+    case PS_CRIPPLED:
+        return "crippled";
+    default:
+        return "unknown";
+    }
+}
+
+void AppendDownedStateLogFields(
+    std::stringstream& line,
+    const char* prefix,
+    const DownedTeleportState& state)
+{
+    const std::string fieldPrefix = prefix ? prefix : "state";
+    line << " " << fieldPrefix << "_active=" << (state.active ? "true" : "false")
+         << " " << fieldPrefix << "_prone=\"" << GetProneStateLabel(state.proneState) << "\""
+         << " " << fieldPrefix << "_wants_get_up=" << (state.playerWantsMeToGetUp ? "true" : "false")
+         << " " << fieldPrefix << "_crippled=" << (state.crippled ? "true" : "false")
+         << " " << fieldPrefix << "_unconscious=" << (state.unconscious ? "true" : "false")
+         << " " << fieldPrefix << "_sub50ko=" << (state.sub50KO ? "true" : "false")
+         << " " << fieldPrefix << "_bloodloss=" << (state.bloodlossTrauma ? "true" : "false")
+         << " " << fieldPrefix << "_knockout_timer=" << state.knockoutTimer;
+}
+
+void AppendCharacterSnapshotLogFields(
+    std::stringstream& line,
+    const char* prefix,
+    const CharacterPositionSnapshot& snapshot)
+{
+    const std::string fieldPrefix = prefix ? prefix : "snapshot";
+    if (snapshot.hasPosition)
+    {
+        line << " " << fieldPrefix << "_position_x=" << snapshot.position.x
+             << " " << fieldPrefix << "_position_y=" << snapshot.position.y
+             << " " << fieldPrefix << "_position_z=" << snapshot.position.z;
+    }
+    if (snapshot.hasRawEntityPosition)
+    {
+        line << " " << fieldPrefix << "_raw_entity_x=" << snapshot.rawEntityPosition.x
+             << " " << fieldPrefix << "_raw_entity_y=" << snapshot.rawEntityPosition.y
+             << " " << fieldPrefix << "_raw_entity_z=" << snapshot.rawEntityPosition.z;
+    }
+    if (snapshot.hasRawPosition)
+    {
+        line << " " << fieldPrefix << "_raw_x=" << snapshot.rawPosition.x
+             << " " << fieldPrefix << "_raw_y=" << snapshot.rawPosition.y
+             << " " << fieldPrefix << "_raw_z=" << snapshot.rawPosition.z;
+    }
+    if (snapshot.hasTerrainHeight)
+    {
+        line << " " << fieldPrefix << "_terrain_height=" << snapshot.terrainHeight;
+    }
+}
+
+bool TryGetDownedTeleportState(Character* character, DownedTeleportState* outState)
+{
+    if (outState)
+    {
+        *outState = DownedTeleportState();
+    }
+
+    if (!character || !outState)
+    {
+        return false;
+    }
+
+    __try
+    {
+        MedicalSystem* medical = character->getMedical();
+        if (!medical)
+        {
+            return false;
+        }
+
+        outState->proneState = character->_NV_getProneState();
+        outState->playerWantsMeToGetUp = character->playerWantsMeToGetUp;
+        outState->crippled = medical->crippled;
+        outState->unconscious = medical->unconcious;
+        outState->sub50KO = medical->sub50KO;
+        outState->bloodlossTrauma = medical->bloodlossTrauma;
+        outState->knockoutTimer = medical->knockoutTimer;
+        outState->active =
+            outState->proneState == PS_KO
+            || outState->proneState == PS_PLAYING_DEAD
+            || outState->proneState == PS_CRIPPLED
+            || outState->unconscious
+            || outState->sub50KO
+            || outState->crippled
+            || outState->bloodlossTrauma
+            || outState->knockoutTimer > 0.0f;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool DoesSnapshotRawPositionMatchDestination(
+    const CharacterPositionSnapshot& snapshot,
+    const Ogre::Vector3& destination)
+{
+    return snapshot.hasRawPosition && AreVectorsNearlyEqual(snapshot.rawPosition, destination);
+}
+
+bool DoesSnapshotBodyPositionMatchDestination(
+    const CharacterPositionSnapshot& snapshot,
+    const Ogre::Vector3& destination)
+{
+    if (snapshot.hasPosition && AreVectorsNearlyEqual(snapshot.position, destination))
+    {
+        return true;
+    }
+
+    return snapshot.hasRawEntityPosition && AreVectorsNearlyEqual(snapshot.rawEntityPosition, destination);
+}
+
+bool ShouldRetryExactTeleportWithMovement(
+    const CharacterPositionSnapshot& beforeSnapshot,
+    const CharacterPositionSnapshot& afterSnapshot)
+{
+    if (!beforeSnapshot.hasPosition || !afterSnapshot.hasPosition)
+    {
+        return false;
+    }
+
+    if (!AreVectorsNearlyEqual(beforeSnapshot.position, afterSnapshot.position))
+    {
+        return false;
+    }
+
+    if (beforeSnapshot.hasRawEntityPosition && afterSnapshot.hasRawEntityPosition)
+    {
+        return AreVectorsNearlyEqual(beforeSnapshot.rawEntityPosition, afterSnapshot.rawEntityPosition);
+    }
+
+    return true;
+}
+
+bool TryRetryExactTeleportWithMovement(
+    Character* character,
+    const Ogre::Vector3& destination,
+    CharacterPositionSnapshot* afterSnapshotOut)
+{
+    if (afterSnapshotOut)
+    {
+        *afterSnapshotOut = CharacterPositionSnapshot();
+    }
+
+    if (!character)
+    {
+        return false;
+    }
+
+    __try
+    {
+        character->teleportVisuallyOnly(destination, character->getOrientation());
+        character->teleportFromAnimation();
+        character->setTerrainHeightPosition(destination.y);
+        character->setRagdollNavmeshSafePos();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    if (afterSnapshotOut)
+    {
+        TryGetCharacterPositionSnapshot(character, afterSnapshotOut);
+    }
+
+    return true;
+}
+
+bool TryRetryExactTeleportWithRelocation(
+    Character* character,
+    const Ogre::Vector3& moveBy,
+    const Ogre::Vector3& destination,
+    CharacterPositionSnapshot* afterSnapshotOut)
+{
+    if (afterSnapshotOut)
+    {
+        *afterSnapshotOut = CharacterPositionSnapshot();
+    }
+
+    if (!character)
+    {
+        return false;
+    }
+
+    __try
+    {
+        character->relocationTeleport(moveBy);
+        character->setTerrainHeightPosition(destination.y);
+        character->setRagdollNavmeshSafePos();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    if (afterSnapshotOut)
+    {
+        TryGetCharacterPositionSnapshot(character, afterSnapshotOut);
+    }
+
+    return true;
+}
+
+bool TryTemporarilyClearDownedCharacterForTeleport(
+    Character* character,
+    const DownedTeleportState& downedState)
+{
+    if (!character || !downedState.active)
+    {
+        return false;
+    }
+
+    __try
+    {
+        MedicalSystem* medical = character->getMedical();
+        if (!medical)
+        {
+            return false;
+        }
+
+        character->playerWantsMeToGetUp = true;
+        if (downedState.proneState != PS_NORMAL)
+        {
+            character->_NV_setProneState(PS_NORMAL);
+        }
+
+        medical->crippled = false;
+        medical->unconcious = false;
+        medical->sub50KO = false;
+        medical->bloodlossTrauma = false;
+        medical->knockoutTimer = 0.0f;
+        medical->validateHealthValues();
+        medical->_reassessRagdollPartsAssumingWeJustClearedTheEntireRagdoll();
+        medical->reassessCollapseMode(false, false);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool TryRestoreDownedCharacterAfterTeleport(
+    Character* character,
+    const DownedTeleportState& downedState)
+{
+    if (!character || !downedState.active)
+    {
+        return false;
+    }
+
+    __try
+    {
+        MedicalSystem* medical = character->getMedical();
+        if (!medical)
+        {
+            return false;
+        }
+
+        character->playerWantsMeToGetUp = downedState.playerWantsMeToGetUp;
+        medical->crippled = downedState.crippled;
+        medical->unconcious = downedState.unconscious;
+        medical->sub50KO = downedState.sub50KO;
+        medical->bloodlossTrauma = downedState.bloodlossTrauma;
+        medical->knockoutTimer = downedState.knockoutTimer;
+        character->_NV_setProneState(downedState.proneState);
+        medical->validateHealthValues();
+        medical->_reassessRagdollPartsAssumingWeJustClearedTheEntireRagdoll();
+        medical->reassessCollapseMode(false, downedState.bloodlossTrauma);
+        character->setRagdollNavmeshSafePos();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool TryRetryExactTeleportWithDelayedDownedRestore(
+    Character* character,
+    const Ogre::Vector3& destination,
+    const DownedTeleportState& downedState,
+    CharacterPositionSnapshot* afterSnapshotOut)
+{
+    if (afterSnapshotOut)
+    {
+        *afterSnapshotOut = CharacterPositionSnapshot();
+    }
+
+    if (!character)
+    {
+        return false;
+    }
+
+    __try
+    {
+        if (!TryTemporarilyClearDownedCharacterForTeleport(character, downedState))
+        {
+            return false;
+        }
+
+        character->setRagdollNavmeshSafePos();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        TryRestoreDownedCharacterAfterTeleport(character, downedState);
+        return false;
+    }
+
+    if (afterSnapshotOut)
+    {
+        TryGetCharacterPositionSnapshot(character, afterSnapshotOut);
+    }
+    return true;
+}
+
+bool TryAdvancePendingDownedTeleport(
+    Character* character,
+    const Ogre::Vector3& destination,
+    const DownedTeleportState& downedState,
+    bool* clearAppliedOut,
+    bool* teleportCalledOut,
+    bool* relocationSyncCalledOut,
+    CharacterPositionSnapshot* afterSnapshotOut)
+{
+    if (clearAppliedOut)
+    {
+        *clearAppliedOut = false;
+    }
+    if (teleportCalledOut)
+    {
+        *teleportCalledOut = false;
+    }
+    if (relocationSyncCalledOut)
+    {
+        *relocationSyncCalledOut = false;
+    }
+    if (afterSnapshotOut)
+    {
+        *afterSnapshotOut = CharacterPositionSnapshot();
+    }
+
+    if (!character)
+    {
+        return false;
+    }
+
+    CharacterPositionSnapshot beforeSnapshot;
+    const bool hasBeforeSnapshot = TryGetCharacterPositionSnapshot(character, &beforeSnapshot);
+    if (hasBeforeSnapshot && DoesSnapshotBodyPositionMatchDestination(beforeSnapshot, destination))
+    {
+        if (afterSnapshotOut)
+        {
+            *afterSnapshotOut = beforeSnapshot;
+        }
+        return true;
+    }
+
+    __try
+    {
+        if (!TryTemporarilyClearDownedCharacterForTeleport(character, downedState))
+        {
+            return false;
+        }
+        if (clearAppliedOut)
+        {
+            *clearAppliedOut = true;
+        }
+
+        character->teleport(destination, character->getOrientation());
+        if (teleportCalledOut)
+        {
+            *teleportCalledOut = true;
+        }
+
+        character->relocationTeleport(Ogre::Vector3(0.0f, 0.0f, 0.0f));
+        if (relocationSyncCalledOut)
+        {
+            *relocationSyncCalledOut = true;
+        }
+
+        character->setTerrainHeightPosition(destination.y);
+        character->setRagdollNavmeshSafePos();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+
+    if (afterSnapshotOut)
+    {
+        TryGetCharacterPositionSnapshot(character, afterSnapshotOut);
+    }
+
+    return true;
+}
+
+void LogDownedTeleportFallbackSelectionInvestigation(
+    const char* actionId,
+    Character* character,
+    const Ogre::Vector3& destination,
+    bool observedDowned,
+    bool useDownedRagdollSync,
+    const CharacterPositionSnapshot& beforeSnapshot,
+    const CharacterPositionSnapshot& afterSnapshot,
+    const DownedTeleportState& downedState)
+{
+    if (!g_developerMode || !observedDowned)
+    {
+        return;
+    }
+
+    std::stringstream line;
+    line << "[investigate][teleport_downed] action=\""
+         << SanitizeLogValue(actionId ? actionId : "")
+         << "\" phase=\"fallback_selected\""
+         << " target_name=\"" << SanitizeLogValue(SafeCharacterName(character)) << "\""
+         << " sync_mode=\"" << (useDownedRagdollSync ? "delayed_restore" : "relocation_move") << "\""
+         << " destination_x=" << destination.x
+         << " destination_y=" << destination.y
+         << " destination_z=" << destination.z
+         << " before_body_at_destination=" << (DoesSnapshotBodyPositionMatchDestination(beforeSnapshot, destination) ? "true" : "false")
+         << " before_raw_at_destination=" << (DoesSnapshotRawPositionMatchDestination(beforeSnapshot, destination) ? "true" : "false")
+         << " after_body_at_destination=" << (DoesSnapshotBodyPositionMatchDestination(afterSnapshot, destination) ? "true" : "false")
+         << " after_raw_at_destination=" << (DoesSnapshotRawPositionMatchDestination(afterSnapshot, destination) ? "true" : "false");
+    AppendDownedStateLogFields(line, "detected", downedState);
+    LogInfoLine(line.str());
+}
+
 bool TryGetCharacterPosition(Character* character, Ogre::Vector3* outPosition)
 {
     if (!character || !outPosition)
@@ -3808,190 +4296,116 @@ void LogSavedLocationPositionInvestigation(
     LogInfoLine(line.str());
 }
 
-void LogTeleportApplyInvestigation(
+void ClearPendingDownedTeleportRestores()
+{
+    g_pendingDownedTeleportRestores.clear();
+}
+
+void SchedulePendingDownedTeleportRestore(
     const char* actionId,
     Character* character,
-    const Ogre::Vector3& referencePosition,
-    const char* referenceSource,
-    const Ogre::Vector3& destination,
-    const Ogre::Vector3& teleportInput,
-    bool useAbsoluteTeleportInput,
-    const CharacterPositionSnapshot& beforeSnapshot,
-    const CharacterPositionSnapshot& afterSnapshot)
+    const DownedTeleportState& downedState,
+    const Ogre::Vector3& destination)
 {
-    if (!g_developerMode)
+    if (!character || !downedState.active)
     {
         return;
     }
 
-    std::stringstream line;
-    line << "[investigate][teleport_apply] action=\"" << actionId << "\""
-         << " target_name=\"" << SanitizeLogValue(SafeCharacterName(character)) << "\""
-         << " reference_source=\"" << SanitizeLogValue(referenceSource ? referenceSource : "unknown") << "\""
-         << " reference_x=" << referencePosition.x
-         << " reference_y=" << referencePosition.y
-         << " reference_z=" << referencePosition.z
-         << " destination_x=" << destination.x
-         << " destination_y=" << destination.y
-         << " destination_z=" << destination.z
-         << " input_mode=\"" << (useAbsoluteTeleportInput ? "absolute" : "delta") << "\""
-         << " teleport_input_x=" << teleportInput.x
-         << " teleport_input_y=" << teleportInput.y
-         << " teleport_input_z=" << teleportInput.z
-         << " move_by_x=" << (destination.x - referencePosition.x)
-         << " move_by_y=" << (destination.y - referencePosition.y)
-         << " move_by_z=" << (destination.z - referencePosition.z);
-    if (beforeSnapshot.hasPosition)
+    for (std::size_t index = 0; index < g_pendingDownedTeleportRestores.size();)
     {
-        line << " before_position_x=" << beforeSnapshot.position.x
-             << " before_position_y=" << beforeSnapshot.position.y
-             << " before_position_z=" << beforeSnapshot.position.z;
-    }
-    if (beforeSnapshot.hasRawEntityPosition)
-    {
-        line << " before_raw_entity_x=" << beforeSnapshot.rawEntityPosition.x
-             << " before_raw_entity_y=" << beforeSnapshot.rawEntityPosition.y
-             << " before_raw_entity_z=" << beforeSnapshot.rawEntityPosition.z;
-    }
-    if (afterSnapshot.hasPosition)
-    {
-        line << " after_position_x=" << afterSnapshot.position.x
-             << " after_position_y=" << afterSnapshot.position.y
-             << " after_position_z=" << afterSnapshot.position.z;
-    }
-    if (afterSnapshot.hasRawEntityPosition)
-    {
-        line << " after_raw_entity_x=" << afterSnapshot.rawEntityPosition.x
-             << " after_raw_entity_y=" << afterSnapshot.rawEntityPosition.y
-             << " after_raw_entity_z=" << afterSnapshot.rawEntityPosition.z;
-    }
-    LogInfoLine(line.str());
-}
-
-void ClearPendingTeleportProbe()
-{
-    g_pendingTeleportProbe = PendingTeleportProbe();
-}
-
-bool ShouldSamplePendingTeleportProbeAtTick(int ageTicks)
-{
-    return ageTicks == 1
-        || ageTicks == 5
-        || ageTicks == 20
-        || ageTicks == 60;
-}
-
-void ArmPendingTeleportProbe(
-    const char* actionId,
-    Character* character,
-    const Ogre::Vector3& expectedDestination)
-{
-    if (!g_developerMode || !character)
-    {
-        return;
-    }
-
-    g_pendingTeleportProbe = PendingTeleportProbe();
-    g_pendingTeleportProbe.character = character;
-    g_pendingTeleportProbe.actionId = actionId ? actionId : "";
-    g_pendingTeleportProbe.targetName = SafeCharacterName(character);
-    g_pendingTeleportProbe.expectedDestination = expectedDestination;
-    g_pendingTeleportProbe.active = true;
-
-    std::stringstream line;
-    line << "[investigate][teleport_probe] action=\""
-         << SanitizeLogValue(g_pendingTeleportProbe.actionId)
-         << "\" phase=\"armed\""
-         << " target_name=\"" << SanitizeLogValue(g_pendingTeleportProbe.targetName) << "\""
-         << " expected_x=" << expectedDestination.x
-         << " expected_y=" << expectedDestination.y
-         << " expected_z=" << expectedDestination.z;
-    LogInfoLine(line.str());
-}
-
-void TickPendingTeleportProbe()
-{
-    if (!g_pendingTeleportProbe.active)
-    {
-        return;
-    }
-
-    if (!g_developerMode)
-    {
-        ClearPendingTeleportProbe();
-        return;
-    }
-
-    ++g_pendingTeleportProbe.ageTicks;
-    if (!ShouldSamplePendingTeleportProbeAtTick(g_pendingTeleportProbe.ageTicks))
-    {
-        return;
-    }
-
-    CharacterPositionSnapshot snapshot;
-    if (!TryGetCharacterPositionSnapshot(g_pendingTeleportProbe.character, &snapshot))
-    {
-        std::stringstream line;
-        line << "[investigate][teleport_probe] action=\""
-             << SanitizeLogValue(g_pendingTeleportProbe.actionId)
-             << "\" phase=\"sample_failed\""
-             << " tick=" << g_pendingTeleportProbe.ageTicks
-             << " target_name=\"" << SanitizeLogValue(g_pendingTeleportProbe.targetName) << "\"";
-        LogInfoLine(line.str());
-
-        if (g_pendingTeleportProbe.ageTicks >= 60)
+        if (g_pendingDownedTeleportRestores[index].character == character)
         {
-            ClearPendingTeleportProbe();
+            g_pendingDownedTeleportRestores.erase(g_pendingDownedTeleportRestores.begin() + index);
+            continue;
         }
-        return;
+
+        ++index;
     }
 
-    std::stringstream line;
-    line << "[investigate][teleport_probe] action=\""
-         << SanitizeLogValue(g_pendingTeleportProbe.actionId)
-         << "\" phase=\"sample\""
-         << " tick=" << g_pendingTeleportProbe.ageTicks
-         << " target_name=\"" << SanitizeLogValue(g_pendingTeleportProbe.targetName) << "\""
-         << " expected_x=" << g_pendingTeleportProbe.expectedDestination.x
-         << " expected_y=" << g_pendingTeleportProbe.expectedDestination.y
-         << " expected_z=" << g_pendingTeleportProbe.expectedDestination.z;
-    if (snapshot.hasPosition)
-    {
-        line << " position_x=" << snapshot.position.x
-             << " position_y=" << snapshot.position.y
-             << " position_z=" << snapshot.position.z
-             << " position_delta_x=" << (snapshot.position.x - g_pendingTeleportProbe.expectedDestination.x)
-             << " position_delta_y=" << (snapshot.position.y - g_pendingTeleportProbe.expectedDestination.y)
-             << " position_delta_z=" << (snapshot.position.z - g_pendingTeleportProbe.expectedDestination.z);
-    }
-    if (snapshot.hasRawEntityPosition)
-    {
-        line << " raw_entity_x=" << snapshot.rawEntityPosition.x
-             << " raw_entity_y=" << snapshot.rawEntityPosition.y
-             << " raw_entity_z=" << snapshot.rawEntityPosition.z
-             << " raw_entity_delta_x=" << (snapshot.rawEntityPosition.x - g_pendingTeleportProbe.expectedDestination.x)
-             << " raw_entity_delta_y=" << (snapshot.rawEntityPosition.y - g_pendingTeleportProbe.expectedDestination.y)
-             << " raw_entity_delta_z=" << (snapshot.rawEntityPosition.z - g_pendingTeleportProbe.expectedDestination.z);
-    }
-    if (snapshot.hasRawPosition)
-    {
-        line << " raw_x=" << snapshot.rawPosition.x
-             << " raw_y=" << snapshot.rawPosition.y
-             << " raw_z=" << snapshot.rawPosition.z
-             << " raw_delta_x=" << (snapshot.rawPosition.x - g_pendingTeleportProbe.expectedDestination.x)
-             << " raw_delta_y=" << (snapshot.rawPosition.y - g_pendingTeleportProbe.expectedDestination.y)
-             << " raw_delta_z=" << (snapshot.rawPosition.z - g_pendingTeleportProbe.expectedDestination.z);
-    }
-    if (snapshot.hasTerrainHeight)
-    {
-        line << " terrain_height=" << snapshot.terrainHeight
-             << " terrain_delta_y=" << (snapshot.terrainHeight - g_pendingTeleportProbe.expectedDestination.y);
-    }
-    LogInfoLine(line.str());
+    PendingDownedTeleportRestore pending;
+    pending.character = character;
+    pending.actionId = actionId ? actionId : "";
+    pending.targetName = SafeCharacterName(character);
+    pending.state = downedState;
+    pending.destination = destination;
+    pending.active = true;
+    g_pendingDownedTeleportRestores.push_back(pending);
+}
 
-    if (g_pendingTeleportProbe.ageTicks >= 60)
+void TickPendingDownedTeleportRestores()
+{
+    for (std::size_t index = 0; index < g_pendingDownedTeleportRestores.size();)
     {
-        ClearPendingTeleportProbe();
+        PendingDownedTeleportRestore& pending = g_pendingDownedTeleportRestores[index];
+        if (!pending.active)
+        {
+            g_pendingDownedTeleportRestores.erase(g_pendingDownedTeleportRestores.begin() + index);
+            continue;
+        }
+
+        ++pending.ageTicks;
+        CharacterPositionSnapshot syncSnapshot;
+        bool clearApplied = false;
+        bool teleportCalled = false;
+        bool relocationSyncCalled = false;
+        const bool syncApplied = TryAdvancePendingDownedTeleport(
+            pending.character,
+            pending.destination,
+            pending.state,
+            &clearApplied,
+            &teleportCalled,
+            &relocationSyncCalled,
+            &syncSnapshot);
+        const bool bodyAtDestination =
+            syncApplied && DoesSnapshotBodyPositionMatchDestination(syncSnapshot, pending.destination);
+
+        if (pending.ageTicks < kDownedTeleportRestoreMinDelayTicks)
+        {
+            ++index;
+            continue;
+        }
+
+        if (!bodyAtDestination && pending.ageTicks < kDownedTeleportRestoreMaxDelayTicks)
+        {
+            ++index;
+            continue;
+        }
+
+        const bool restored = TryRestoreDownedCharacterAfterTeleport(pending.character, pending.state);
+        DownedTeleportState restoredState;
+        const bool hasRestoredState = TryGetDownedTeleportState(pending.character, &restoredState);
+        CharacterPositionSnapshot restoredSnapshot;
+        const bool hasRestoredSnapshot = TryGetCharacterPositionSnapshot(pending.character, &restoredSnapshot);
+        if (g_developerMode && (!bodyAtDestination || !restored))
+        {
+            std::stringstream line;
+            line << "[investigate][teleport_restore] action=\""
+                 << SanitizeLogValue(pending.actionId)
+                 << "\" phase=\"final\""
+                 << " target_name=\"" << SanitizeLogValue(pending.targetName) << "\""
+                 << " tick=" << pending.ageTicks
+                 << " restore_reason=\"" << (bodyAtDestination ? "arrived" : "timeout") << "\""
+                 << " sync_applied=" << (syncApplied ? "true" : "false")
+                 << " clear_applied=" << (clearApplied ? "true" : "false")
+                 << " teleport_called=" << (teleportCalled ? "true" : "false")
+                 << " relocation_zero_called=" << (relocationSyncCalled ? "true" : "false")
+                 << " body_at_destination=" << (bodyAtDestination ? "true" : "false")
+                 << " restored=" << (restored ? "true" : "false")
+                 << " restored_state_captured=" << (hasRestoredState ? "true" : "false")
+                 << " restored_snapshot_captured=" << (hasRestoredSnapshot ? "true" : "false");
+            if (hasRestoredState)
+            {
+                AppendDownedStateLogFields(line, "restored", restoredState);
+            }
+            if (hasRestoredSnapshot)
+            {
+                AppendCharacterSnapshotLogFields(line, "restored", restoredSnapshot);
+            }
+            LogInfoLine(line.str());
+        }
+
+        g_pendingDownedTeleportRestores.erase(g_pendingDownedTeleportRestores.begin() + index);
     }
 }
 
@@ -7302,7 +7716,6 @@ bool TryTeleportSelectedCharactersToCamera(
         }
 
         int teleportedCount = 0;
-        bool loggedTeleportApply = false;
 
         ogre_unordered_set<hand>::type::const_iterator teleportIt = selectedCharacters.begin();
         for (; teleportIt != selectedCharacters.end(); ++teleportIt)
@@ -7314,47 +7727,56 @@ bool TryTeleportSelectedCharactersToCamera(
             }
 
             Ogre::Vector3 referencePosition(0.0f, 0.0f, 0.0f);
-            const char* referenceSource = "position";
             if (!TryGetCharacterTeleportReferencePosition(
                     character,
                     useSpawnValidation,
                     &referencePosition,
-                    &referenceSource))
+                    0))
             {
                 referencePosition = character->getPosition();
-                referenceSource = "position";
             }
 
             CharacterPositionSnapshot beforeSnapshot;
             const bool capturedBeforeSnapshot =
-                g_developerMode && !loggedTeleportApply && TryGetCharacterPositionSnapshot(character, &beforeSnapshot);
+                !useSpawnValidation && TryGetCharacterPositionSnapshot(character, &beforeSnapshot);
 
             const bool useAbsoluteTeleportInput = !useSpawnValidation;
+            const Ogre::Vector3 moveBy = resolvedDestination - referencePosition;
             const Ogre::Vector3 teleportInput =
-                useAbsoluteTeleportInput ? resolvedDestination : (resolvedDestination - referencePosition);
+                useAbsoluteTeleportInput ? resolvedDestination : moveBy;
             character->teleport(teleportInput, character->getOrientation());
             character->setRagdollNavmeshSafePos();
 
-            if (g_developerMode && !loggedTeleportApply)
+            CharacterPositionSnapshot afterSnapshot;
+            const bool capturedAfterSnapshot =
+                !useSpawnValidation && TryGetCharacterPositionSnapshot(character, &afterSnapshot);
+            if (!useSpawnValidation
+                && capturedBeforeSnapshot
+                && capturedAfterSnapshot
+                && ShouldRetryExactTeleportWithMovement(beforeSnapshot, afterSnapshot))
             {
-                CharacterPositionSnapshot afterSnapshot;
-                if (TryGetCharacterPositionSnapshot(character, &afterSnapshot))
+                DownedTeleportState downedState;
+                const bool observedDowned = TryGetDownedTeleportState(character, &downedState) && downedState.active;
+                CharacterPositionSnapshot fallbackSnapshot;
+                const bool useDownedRagdollSync = observedDowned
+                    && DoesSnapshotRawPositionMatchDestination(afterSnapshot, resolvedDestination);
+                LogDownedTeleportFallbackSelectionInvestigation(
+                    actionId,
+                    character,
+                    resolvedDestination,
+                    observedDowned,
+                    useDownedRagdollSync,
+                    beforeSnapshot,
+                    afterSnapshot,
+                    downedState);
+                const bool fallbackApplied = observedDowned
+                    ? (useDownedRagdollSync
+                        ? TryRetryExactTeleportWithDelayedDownedRestore(character, resolvedDestination, downedState, &fallbackSnapshot)
+                        : TryRetryExactTeleportWithRelocation(character, moveBy, resolvedDestination, &fallbackSnapshot))
+                    : TryRetryExactTeleportWithMovement(character, resolvedDestination, &fallbackSnapshot);
+                if (fallbackApplied && useDownedRagdollSync)
                 {
-                    LogTeleportApplyInvestigation(
-                        actionId,
-                        character,
-                        referencePosition,
-                        referenceSource,
-                        resolvedDestination,
-                        teleportInput,
-                        useAbsoluteTeleportInput,
-                        capturedBeforeSnapshot ? beforeSnapshot : CharacterPositionSnapshot(),
-                        afterSnapshot);
-                    if (!useSpawnValidation)
-                    {
-                        ArmPendingTeleportProbe(actionId, character, resolvedDestination);
-                    }
-                    loggedTeleportApply = true;
+                    SchedulePendingDownedTeleportRestore(actionId, character, downedState, resolvedDestination);
                 }
             }
             ++teleportedCount;
@@ -7366,47 +7788,56 @@ bool TryTeleportSelectedCharactersToCamera(
             if (character)
             {
                 Ogre::Vector3 referencePosition(0.0f, 0.0f, 0.0f);
-                const char* referenceSource = "position";
                 if (!TryGetCharacterTeleportReferencePosition(
                         character,
                         useSpawnValidation,
                         &referencePosition,
-                        &referenceSource))
+                        0))
                 {
                     referencePosition = character->getPosition();
-                    referenceSource = "position";
                 }
 
                 CharacterPositionSnapshot beforeSnapshot;
                 const bool capturedBeforeSnapshot =
-                    g_developerMode && !loggedTeleportApply && TryGetCharacterPositionSnapshot(character, &beforeSnapshot);
+                    !useSpawnValidation && TryGetCharacterPositionSnapshot(character, &beforeSnapshot);
 
                 const bool useAbsoluteTeleportInput = !useSpawnValidation;
+                const Ogre::Vector3 moveBy = resolvedDestination - referencePosition;
                 const Ogre::Vector3 teleportInput =
-                    useAbsoluteTeleportInput ? resolvedDestination : (resolvedDestination - referencePosition);
+                    useAbsoluteTeleportInput ? resolvedDestination : moveBy;
                 character->teleport(teleportInput, character->getOrientation());
                 character->setRagdollNavmeshSafePos();
 
-                if (g_developerMode && !loggedTeleportApply)
+                CharacterPositionSnapshot afterSnapshot;
+                const bool capturedAfterSnapshot =
+                    !useSpawnValidation && TryGetCharacterPositionSnapshot(character, &afterSnapshot);
+                if (!useSpawnValidation
+                    && capturedBeforeSnapshot
+                    && capturedAfterSnapshot
+                    && ShouldRetryExactTeleportWithMovement(beforeSnapshot, afterSnapshot))
                 {
-                    CharacterPositionSnapshot afterSnapshot;
-                    if (TryGetCharacterPositionSnapshot(character, &afterSnapshot))
+                    DownedTeleportState downedState;
+                    const bool observedDowned = TryGetDownedTeleportState(character, &downedState) && downedState.active;
+                    CharacterPositionSnapshot fallbackSnapshot;
+                    const bool useDownedRagdollSync = observedDowned
+                        && DoesSnapshotRawPositionMatchDestination(afterSnapshot, resolvedDestination);
+                    LogDownedTeleportFallbackSelectionInvestigation(
+                        actionId,
+                        character,
+                        resolvedDestination,
+                        observedDowned,
+                        useDownedRagdollSync,
+                        beforeSnapshot,
+                        afterSnapshot,
+                        downedState);
+                    const bool fallbackApplied = observedDowned
+                        ? (useDownedRagdollSync
+                            ? TryRetryExactTeleportWithDelayedDownedRestore(character, resolvedDestination, downedState, &fallbackSnapshot)
+                            : TryRetryExactTeleportWithRelocation(character, moveBy, resolvedDestination, &fallbackSnapshot))
+                        : TryRetryExactTeleportWithMovement(character, resolvedDestination, &fallbackSnapshot);
+                    if (fallbackApplied && useDownedRagdollSync)
                     {
-                        LogTeleportApplyInvestigation(
-                            actionId,
-                            character,
-                            referencePosition,
-                            referenceSource,
-                            resolvedDestination,
-                            teleportInput,
-                            useAbsoluteTeleportInput,
-                            capturedBeforeSnapshot ? beforeSnapshot : CharacterPositionSnapshot(),
-                            afterSnapshot);
-                        if (!useSpawnValidation)
-                        {
-                            ArmPendingTeleportProbe(actionId, character, resolvedDestination);
-                        }
-                        loggedTeleportApply = true;
+                        SchedulePendingDownedTeleportRestore(actionId, character, downedState, resolvedDestination);
                     }
                 }
                 ++teleportedCount;
@@ -9973,7 +10404,7 @@ void OnSaveLoadTransitionStart(const char* source)
     g_inventorySearchCtrlFPrevDown = false;
     g_lastStatusMessage = "Ready";
     ResetInventoryFoodItemOptions();
-    ClearPendingTeleportProbe();
+    ClearPendingDownedTeleportRestores();
     ResetTargetSnapshot(&g_lastTargetSnapshot);
     g_hasLastTargetSnapshot = false;
 }
@@ -9982,7 +10413,7 @@ void PlayerInterface_updateUT_hook(PlayerInterface* thisptr)
 {
     PlayerInterface_updateUT_orig(thisptr);
 
-    TickPendingTeleportProbe();
+    TickPendingDownedTeleportRestores();
     TickModHubAttachRetry();
     TickPanelToggleHotkey();
     EnsurePanel(thisptr);

@@ -52,6 +52,33 @@ function Enable-DeveloperModeInModConfig {
     }
 }
 
+function Backup-DeployedModConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+
+    $tempPath = [System.IO.Path]::GetTempFileName()
+    Copy-Item -Path $Path -Destination $tempPath -Force
+    return $tempPath
+}
+
+function Restore-DeployedModConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    if (-not $BackupPath -or -not (Test-Path $BackupPath)) {
+        return
+    }
+
+    Copy-Item -Path $BackupPath -Destination $DestinationPath -Force
+}
+
 function Get-ImportedBoostRuntimeDllNames {
     param(
         [Parameter(Mandatory = $true)][string]$DllPath
@@ -165,8 +192,15 @@ if (-not (Test-Path $resolved.ModDir) -and (Test-Path $initTemplateScript)) {
 }
 
 if (Test-Path $resolved.ModDir) {
+    $runtimeModConfigPath = Join-Path $resolved.KenshiModPath "mod-config.json"
+    $modConfigBackupPath = Backup-DeployedModConfig -Path $runtimeModConfigPath
     Copy-Item -Path "$($resolved.ModDir)\*" -Destination $resolved.KenshiModPath -Recurse -Force
     Write-Host "Copied mod files from: $($resolved.ModDir)" -ForegroundColor Gray
+    if ($modConfigBackupPath) {
+        Restore-DeployedModConfig -BackupPath $modConfigBackupPath -DestinationPath $runtimeModConfigPath
+        Remove-Item -Path $modConfigBackupPath -Force -ErrorAction SilentlyContinue
+        Write-Host "Preserved deployed mod-config.json." -ForegroundColor Gray
+    }
     Enable-DeveloperModeInModConfig -Path (Join-Path $resolved.KenshiModPath "mod-config.json")
 } else {
     Write-Host "WARNING: Mod template directory not found: $($resolved.ModDir)" -ForegroundColor Yellow
