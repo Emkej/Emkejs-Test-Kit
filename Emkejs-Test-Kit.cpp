@@ -89,8 +89,6 @@ const float kForceDyingAliveBloodMargin = 1.0f;
 const float kProbablyDyingBloodMax = 50.0f;
 const float kLimbDamageFraction = 0.35f;
 const float kMinimumLimbDamageAmount = 5.0f;
-const char* kTeleportDestinationLabel = "Test Spot";
-const Ogre::Vector3 kTeleportDestinationCenter(-56164.4f, 1605.11f, 20653.6f);
 const float kFloatChangeEpsilon = 0.001f;
 const int kSavedLocationsSectionContentHeight = 210;
 const int kSavedLocationsListHeight = 120;
@@ -504,7 +502,6 @@ MyGUI::Button* g_damageRightArmButton = 0;
 MyGUI::Button* g_damageLeftLegButton = 0;
 MyGUI::Button* g_damageRightLegButton = 0;
 MyGUI::TextBox* g_teleportSectionText = 0;
-MyGUI::Button* g_teleportSelectedToCameraButton = 0;
 MyGUI::TextBox* g_saveLocationNameLabelText = 0;
 MyGUI::EditBox* g_saveLocationNameEdit = 0;
 MyGUI::Button* g_saveSelectedLocationButton = 0;
@@ -562,9 +559,11 @@ void ApplyPanelLayout();
 int GetSelectedCharacterCount(PlayerInterface* player);
 void ConfigureTextWidget(MyGUI::TextBox* widget);
 void SetActivePanelTab(PanelTab tab);
+void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*);
 bool TryGetSelectedSavedLocation(size_t* indexOut, SavedLocation* locationOut);
 void RefreshSavedLocationActionButtons(PlayerInterface* player);
 void OnSavedLocationsCollapseButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnSaveLocationNameAccepted(MyGUI::EditBox*);
 void OnSavedLocationSearchTextChanged(MyGUI::EditBox*);
 void OnSavedLocationsListSelectionChanged(MyGUI::ListBox*, size_t);
 void OnSavedLocationTeleportButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
@@ -2390,11 +2389,6 @@ bool CompareSavedLocationsForDisplay(const SavedLocation& left, const SavedLocat
         return left.pinned;
     }
 
-    if (left.lastUsedUtc != right.lastUsedUtc)
-    {
-        return left.lastUsedUtc > right.lastUsedUtc;
-    }
-
     const std::string leftNameUpper = ToUpperAscii(left.name);
     const std::string rightNameUpper = ToUpperAscii(right.name);
     if (leftNameUpper != rightNameUpper)
@@ -3437,7 +3431,10 @@ void RefreshSaveLocationInputUi()
 {
     if (g_saveLocationNameLabelText)
     {
-        g_saveLocationNameLabelText->setCaption(g_savedLocationRenameId.empty() ? "Location Name" : "Rename Location");
+        g_saveLocationNameLabelText->setCaption(
+            g_savedLocationRenameId.empty()
+                ? "Location Name (Enter to save)"
+                : "Rename Location (Enter to confirm)");
     }
 
     if (g_saveSelectedLocationButton)
@@ -4559,7 +4556,6 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_forceDyingButton, healthVisible);
 
     SetWidgetVisible(g_teleportSectionText, teleportVisible);
-    SetWidgetVisible(g_teleportSelectedToCameraButton, teleportVisible);
     SetWidgetVisible(g_saveLocationNameLabelText, teleportVisible);
     SetWidgetVisible(g_saveLocationNameEdit, teleportVisible);
     SetWidgetVisible(g_saveSelectedLocationButton, teleportVisible);
@@ -4770,13 +4766,13 @@ int GetSavedLocationsContentBottomInBodyCoords()
     const int bodyTop = GetPanelBodyTop();
     if (g_savedLocationsCollapsed)
     {
-        const int fallbackBottom = 384 - bodyTop;
+        const int fallbackBottom = 350 - bodyTop;
         return GetWidgetBottom(
             g_savedLocationsCollapseButton,
             GetWidgetBottom(g_savedLocationsSectionText, fallbackBottom));
     }
 
-    return GetWidgetBottom(g_savedLocationsRowsRoot, 598 - bodyTop);
+    return GetWidgetBottom(g_savedLocationsRowsRoot, 564 - bodyTop);
 }
 
 int GetActivePanelContentBottomInBodyCoords()
@@ -5231,7 +5227,6 @@ void ResetPanelWidgetPointers()
     g_damageLeftLegButton = 0;
     g_damageRightLegButton = 0;
     g_teleportSectionText = 0;
-    g_teleportSelectedToCameraButton = 0;
     g_saveLocationNameLabelText = 0;
     g_saveLocationNameEdit = 0;
     g_saveSelectedLocationButton = 0;
@@ -6744,11 +6739,6 @@ void SetActionButtonsEnabled(bool enabled)
 
 void SetSelectionActionButtonsEnabled(bool enabled)
 {
-    if (g_teleportSelectedToCameraButton)
-    {
-        g_teleportSelectedToCameraButton->setEnabled(enabled);
-    }
-
     if (g_saveSelectedLocationButton)
     {
         g_saveSelectedLocationButton->setEnabled(enabled || !g_savedLocationRenameId.empty());
@@ -7884,26 +7874,6 @@ bool TryTeleportSelectedCharactersToCamera(
     return true;
 }
 
-bool TryTeleportSelectedCharactersToCamera(
-    PlayerInterface* player,
-    int* selectedCountOut,
-    int* teleportedCountOut,
-    Ogre::Vector3* requestedDestinationOut,
-    Ogre::Vector3* resolvedDestinationOut,
-    bool* validSpawnFoundOut)
-{
-    return TryTeleportSelectedCharactersToCamera(
-        player,
-        "teleport_selected_to_test_spot",
-        kTeleportDestinationCenter,
-        true,
-        selectedCountOut,
-        teleportedCountOut,
-        requestedDestinationOut,
-        resolvedDestinationOut,
-        validSpawnFoundOut);
-}
-
 void ReportShellOnlyAction(const char* actionId, const char* actionLabel)
 {
     LogActionRequested(actionId);
@@ -8822,114 +8792,29 @@ void OnDamageRightLegButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton 
     }
 }
 
-void OnTeleportSelectedToCameraButtonClicked(MyGUI::Widget*)
-{
-    std::stringstream requested;
-    requested << "event=testkit_action_requested action=\"teleport_selected_to_test_spot\"";
-    LogInfoLine(requested.str());
-
-    if (!g_lastPlayerInterface)
-    {
-        LogInfoLine("event=testkit_action_result action=\"teleport_selected_to_test_spot\" success=false reason=\"no_player_interface\"");
-        SetStatusMessage("Teleport failed - player interface unavailable");
-        return;
-    }
-
-    int selectedCount = 0;
-    int teleportedCount = 0;
-    Ogre::Vector3 requestedDestination(0.0f, 0.0f, 0.0f);
-    Ogre::Vector3 resolvedDestination(0.0f, 0.0f, 0.0f);
-    bool validSpawnFound = false;
-    if (!TryTeleportSelectedCharactersToCamera(
-            g_lastPlayerInterface,
-            &selectedCount,
-            &teleportedCount,
-            &requestedDestination,
-            &resolvedDestination,
-            &validSpawnFound))
-    {
-        LogInfoLine("event=testkit_action_result action=\"teleport_selected_to_test_spot\" success=false reason=\"apply_failed\"");
-        SetStatusMessage(std::string("Teleport to ") + kTeleportDestinationLabel + " failed - apply path unavailable");
-        return;
-    }
-
-    if (selectedCount <= 0)
-    {
-        LogInfoLine("event=testkit_action_result action=\"teleport_selected_to_test_spot\" success=false reason=\"no_selection\"");
-        SetStatusMessage(std::string("No selected characters to teleport to ") + kTeleportDestinationLabel);
-        return;
-    }
-
-    const bool destinationAdjusted =
-        requestedDestination.x != resolvedDestination.x
-        || requestedDestination.y != resolvedDestination.y
-        || requestedDestination.z != resolvedDestination.z;
-    LogTeleportInvestigation(
-        "teleport_selected_to_test_spot",
-        kTeleportDestinationLabel,
-        requestedDestination,
-        resolvedDestination,
-        validSpawnFound);
-
-    std::stringstream result;
-    result << "event=testkit_action_result action=\"teleport_selected_to_test_spot\" success="
-           << (teleportedCount > 0 ? "true" : "false")
-           << " selected_count=" << selectedCount
-           << " teleported_count=" << teleportedCount
-           << " requested_x=" << requestedDestination.x
-           << " requested_y=" << requestedDestination.y
-           << " requested_z=" << requestedDestination.z
-           << " destination_x=" << resolvedDestination.x
-           << " destination_y=" << resolvedDestination.y
-           << " destination_z=" << resolvedDestination.z
-           << " valid_spawn_found=" << (validSpawnFound ? "true" : "false")
-           << " destination_adjusted=" << (destinationAdjusted ? "true" : "false");
-    if (teleportedCount <= 0)
-    {
-        result << " reason=\"not_observed_after_apply\"";
-    }
-    LogInfoLine(result.str());
-
-    if (teleportedCount == selectedCount)
-    {
-        std::stringstream status;
-        status << "Teleported " << teleportedCount << " selected character(s) to " << kTeleportDestinationLabel;
-        SetStatusMessage(status.str());
-    }
-    else if (teleportedCount > 0)
-    {
-        std::stringstream status;
-        status << "Teleported " << teleportedCount << " of " << selectedCount << " selected characters to "
-               << kTeleportDestinationLabel;
-        SetStatusMessage(status.str());
-    }
-    else
-    {
-        SetStatusMessage(std::string("Teleport to ") + kTeleportDestinationLabel + " requested - no selected characters moved");
-    }
-
-    UpdateTargetInspection(g_lastPlayerInterface);
-}
-
-void OnTeleportSelectedToCameraButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
-{
-    if (id != MyGUI::MouseButton::Left)
-    {
-        return;
-    }
-
-    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
-    OnTeleportSelectedToCameraButtonClicked(0);
-
-    if (inputManager)
-    {
-        inputManager->resetMouseCaptureWidget();
-    }
-}
-
 void OnSaveLocationNameTextChanged(MyGUI::EditBox*)
 {
     UpdateSelectionActionButtons(g_lastPlayerInterface);
+}
+
+void OnSaveLocationNameAccepted(MyGUI::EditBox* sender)
+{
+    if (!sender)
+    {
+        return;
+    }
+
+    if (!g_saveSelectedLocationButton || !g_saveSelectedLocationButton->getEnabled())
+    {
+        return;
+    }
+
+    if (TrimAscii(sender->getOnlyText().asUTF8()).empty())
+    {
+        return;
+    }
+
+    OnSaveSelectedLocationButtonClicked(0);
 }
 
 void OnSavedLocationsCollapseButtonClicked(MyGUI::Widget*)
@@ -9982,7 +9867,6 @@ bool HasAllPanelWidgets()
         && g_damageLeftLegButton
         && g_damageRightLegButton
         && g_teleportSectionText
-        && g_teleportSelectedToCameraButton
         && g_saveLocationNameLabelText
         && g_saveLocationNameEdit
         && g_saveSelectedLocationButton
@@ -10090,7 +9974,7 @@ void InitializePanelWidgets()
     g_statesSectionText->setCaption("States");
     g_limbDamageSectionText->setCaption("Limb Damage");
     g_teleportSectionText->setCaption("Teleport");
-    g_saveLocationNameLabelText->setCaption("Location Name");
+    g_saveLocationNameLabelText->setCaption("Location Name (Enter to save)");
     g_savedLocationsSectionText->setCaption("Saved Locations");
     g_savedLocationSearchLabelText->setCaption("Search Saved Locations");
     g_inventorySectionText->setCaption("");
@@ -10109,7 +9993,6 @@ void InitializePanelWidgets()
     g_damageRightArmButton->setCaption("Damage Right Arm");
     g_damageLeftLegButton->setCaption("Damage Left Leg");
     g_damageRightLegButton->setCaption("Damage Right Leg");
-    g_teleportSelectedToCameraButton->setCaption(std::string("Teleport Selected To ") + kTeleportDestinationLabel);
     g_saveLocationNameEdit->setEditStatic(false);
     g_saveLocationNameEdit->setMaxTextLength(64);
     g_saveLocationNameEdit->setOnlyText("");
@@ -10164,8 +10047,8 @@ void InitializePanelWidgets()
     g_damageRightArmButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightArmButtonPressed);
     g_damageLeftLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftLegButtonPressed);
     g_damageRightLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightLegButtonPressed);
-    g_teleportSelectedToCameraButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportSelectedToCameraButtonPressed);
     g_saveLocationNameEdit->eventEditTextChange += MyGUI::newDelegate(&OnSaveLocationNameTextChanged);
+    g_saveLocationNameEdit->eventEditSelectAccept += MyGUI::newDelegate(&OnSaveLocationNameAccepted);
     g_saveSelectedLocationButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSaveSelectedLocationButtonPressed);
     g_savedLocationsCollapseButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationsCollapseButtonPressed);
     g_savedLocationSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnSavedLocationSearchTextChanged);
@@ -10365,33 +10248,29 @@ void CreatePanelWidgets()
         "Kenshi_TextboxPaintedText",
         BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
-    g_teleportSelectedToCameraButton = bodyParent->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        BuildBodyCoord(20, 230, kPanelWidth - 40, 28),
-        MyGUI::Align::Default);
     g_saveLocationNameLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 266, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 232, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_saveLocationNameEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 288, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 254, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_saveSelectedLocationButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 322, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 288, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_savedLocationsSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 360, kPanelWidth - 60, 20),
+        BuildBodyCoord(14, 326, kPanelWidth - 60, 20),
         MyGUI::Align::Default);
     g_savedLocationsCollapseButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(kPanelWidth - 46, 356, 26, 28),
+        BuildBodyCoord(kPanelWidth - 46, 322, 26, 28),
         MyGUI::Align::Default);
     g_savedLocationsRowsRoot = bodyParent->createWidget<MyGUI::Widget>(
         "PanelEmpty",
-        BuildBodyCoord(20, 388, kPanelWidth - 40, kSavedLocationsSectionContentHeight),
+        BuildBodyCoord(20, 354, kPanelWidth - 40, kSavedLocationsSectionContentHeight),
         MyGUI::Align::Default);
     g_savedLocationSearchLabelText = g_savedLocationsRowsRoot->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
