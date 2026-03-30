@@ -92,8 +92,8 @@ const float kMinimumLimbDamageAmount = 5.0f;
 const char* kTeleportDestinationLabel = "Test Spot";
 const Ogre::Vector3 kTeleportDestinationCenter(-56164.4f, 1605.11f, 20653.6f);
 const float kFloatChangeEpsilon = 0.001f;
-const int kSavedLocationRowHeight = 52;
-const int kSavedLocationRowGap = 8;
+const int kSavedLocationsSectionContentHeight = 210;
+const int kSavedLocationsListHeight = 120;
 const int kSavedLocationEmptyHeight = 18;
 // MyGUI expects the popup length as a visual height, not an item count.
 const int kInventoryItemDropdownMaxListLength = 224;
@@ -282,17 +282,6 @@ struct SavedLocation
     Ogre::Vector3 position;
     bool pinned;
     unsigned long long lastUsedUtc;
-};
-
-struct SavedLocationRowWidgets
-{
-    std::string locationId;
-    MyGUI::Widget* root;
-    MyGUI::TextBox* nameText;
-    MyGUI::Button* teleportButton;
-    MyGUI::Button* pinButton;
-    MyGUI::Button* renameButton;
-    MyGUI::Button* deleteButton;
 };
 
 struct CharacterPositionSnapshot
@@ -520,8 +509,16 @@ MyGUI::TextBox* g_saveLocationNameLabelText = 0;
 MyGUI::EditBox* g_saveLocationNameEdit = 0;
 MyGUI::Button* g_saveSelectedLocationButton = 0;
 MyGUI::TextBox* g_savedLocationsSectionText = 0;
+MyGUI::Button* g_savedLocationsCollapseButton = 0;
 MyGUI::Widget* g_savedLocationsRowsRoot = 0;
+MyGUI::TextBox* g_savedLocationSearchLabelText = 0;
+MyGUI::EditBox* g_savedLocationSearchEdit = 0;
+MyGUI::ListBox* g_savedLocationsListBox = 0;
 MyGUI::TextBox* g_savedLocationsEmptyText = 0;
+MyGUI::Button* g_savedLocationTeleportButton = 0;
+MyGUI::Button* g_savedLocationPinButton = 0;
+MyGUI::Button* g_savedLocationRenameButton = 0;
+MyGUI::Button* g_savedLocationDeleteButton = 0;
 MyGUI::TextBox* g_inventorySectionText = 0;
 MyGUI::TextBox* g_moneyAmountLabelText = 0;
 MyGUI::EditBox* g_moneyAmountEdit = 0;
@@ -544,8 +541,11 @@ MyGUI::TextBox* g_statusText = 0;
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
 std::vector<SavedLocation> g_savedLocations;
-std::vector<SavedLocationRowWidgets> g_savedLocationRowWidgets;
+std::vector<size_t> g_filteredSavedLocationIndexes;
 std::string g_savedLocationRenameId;
+std::string g_savedLocationSearchText;
+std::string g_selectedSavedLocationId;
+bool g_savedLocationsCollapsed = false;
 bool g_inventoryFoodItemOptionsLoaded = false;
 PendingInventorySearchShortcut g_pendingInventorySearchShortcut;
 bool g_haveInventorySearchEditSnapshot = false;
@@ -562,10 +562,15 @@ void ApplyPanelLayout();
 int GetSelectedCharacterCount(PlayerInterface* player);
 void ConfigureTextWidget(MyGUI::TextBox* widget);
 void SetActivePanelTab(PanelTab tab);
-void OnSavedLocationRowTeleportButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnSavedLocationRowPinButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnSavedLocationRowRenameButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnSavedLocationRowDeleteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+bool TryGetSelectedSavedLocation(size_t* indexOut, SavedLocation* locationOut);
+void RefreshSavedLocationActionButtons(PlayerInterface* player);
+void OnSavedLocationsCollapseButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnSavedLocationSearchTextChanged(MyGUI::EditBox*);
+void OnSavedLocationsListSelectionChanged(MyGUI::ListBox*, size_t);
+void OnSavedLocationTeleportButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnSavedLocationPinButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnSavedLocationRenameButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnSavedLocationDeleteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 std::string SafeCharacterName(Character* target);
 bool TryGetCharacterPositionSnapshot(Character* character, CharacterPositionSnapshot* outSnapshot);
 
@@ -3401,6 +3406,33 @@ std::string BuildSavedLocationDisplayName(const SavedLocation& location)
     return location.name;
 }
 
+void UpdateSavedLocationsCollapseButtonCaption()
+{
+    if (!g_savedLocationsCollapseButton)
+    {
+        return;
+    }
+
+    g_savedLocationsCollapseButton->setCaption(g_savedLocationsCollapsed ? "+" : "-");
+}
+
+std::string BuildSavedLocationListEntry(size_t displayIndex, const SavedLocation& location)
+{
+    std::stringstream entry;
+    entry << (displayIndex + 1u) << ". " << BuildSavedLocationDisplayName(location);
+    return entry.str();
+}
+
+bool DoesSavedLocationMatchSearch(const SavedLocation& location, const std::string& searchUpper)
+{
+    if (searchUpper.empty())
+    {
+        return true;
+    }
+
+    return ToUpperAscii(location.name).find(searchUpper) != std::string::npos;
+}
+
 void RefreshSaveLocationInputUi()
 {
     if (g_saveLocationNameLabelText)
@@ -3436,113 +3468,65 @@ void BeginSavedLocationRename(const SavedLocation& location)
     }
 }
 
-void DestroySavedLocationRowWidgets()
+void RefreshSavedLocationsListWidget()
 {
-    MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
-    if (gui)
+    if (!g_savedLocationsListBox || !g_savedLocationsEmptyText)
     {
-        for (size_t index = 0; index < g_savedLocationRowWidgets.size(); ++index)
+        return;
+    }
+
+    g_filteredSavedLocationIndexes.clear();
+    g_savedLocationsListBox->removeAllItems();
+
+    const std::string searchUpper = ToUpperAscii(TrimAscii(g_savedLocationSearchText));
+    for (size_t index = 0; index < g_savedLocations.size(); ++index)
+    {
+        const SavedLocation& location = g_savedLocations[index];
+        if (!DoesSavedLocationMatchSearch(location, searchUpper))
         {
-            if (g_savedLocationRowWidgets[index].root)
+            continue;
+        }
+
+        g_filteredSavedLocationIndexes.push_back(index);
+        g_savedLocationsListBox->addItem(BuildSavedLocationListEntry(g_filteredSavedLocationIndexes.size() - 1u, location));
+    }
+
+    if (g_filteredSavedLocationIndexes.empty())
+    {
+        g_selectedSavedLocationId.clear();
+        g_savedLocationsListBox->clearIndexSelected();
+        g_savedLocationsListBox->setVisible(false);
+        g_savedLocationsEmptyText->setCaption(g_savedLocations.empty() ? "No saved locations yet" : "No matching saved locations");
+        g_savedLocationsEmptyText->setVisible(true);
+        RefreshSavedLocationActionButtons(g_lastPlayerInterface);
+        return;
+    }
+
+    g_savedLocationsListBox->setVisible(true);
+    g_savedLocationsEmptyText->setVisible(false);
+
+    size_t selectedFilteredIndex = MyGUI::ITEM_NONE;
+    if (!g_selectedSavedLocationId.empty())
+    {
+        for (size_t filteredIndex = 0; filteredIndex < g_filteredSavedLocationIndexes.size(); ++filteredIndex)
+        {
+            if (g_savedLocations[g_filteredSavedLocationIndexes[filteredIndex]].id == g_selectedSavedLocationId)
             {
-                gui->destroyWidget(g_savedLocationRowWidgets[index].root);
+                selectedFilteredIndex = filteredIndex;
+                break;
             }
         }
     }
 
-    g_savedLocationRowWidgets.clear();
-}
-
-void RefreshSavedLocationsListWidget()
-{
-    if (!g_savedLocationsRowsRoot || !g_savedLocationsEmptyText)
+    if (selectedFilteredIndex == MyGUI::ITEM_NONE)
     {
-        return;
+        selectedFilteredIndex = 0u;
+        g_selectedSavedLocationId = g_savedLocations[g_filteredSavedLocationIndexes[selectedFilteredIndex]].id;
     }
 
-    DestroySavedLocationRowWidgets();
-
-    const int rootWidth = g_savedLocationsRowsRoot->getWidth();
-    const bool hasSelectedCharacters = GetSelectedCharacterCount(g_lastPlayerInterface) > 0;
-    if (g_savedLocations.empty())
-    {
-        g_savedLocationsEmptyText->setCaption("No saved locations yet");
-        g_savedLocationsEmptyText->setVisible(true);
-        g_savedLocationsRowsRoot->setCoord(
-            MyGUI::IntCoord(
-                g_savedLocationsRowsRoot->getLeft(),
-                g_savedLocationsRowsRoot->getTop(),
-                rootWidth,
-                kSavedLocationEmptyHeight));
-        if (g_panel)
-        {
-            ApplyPanelLayout();
-        }
-        return;
-    }
-
-    g_savedLocationsEmptyText->setVisible(false);
-
-    int rowTop = 0;
-    for (size_t index = 0; index < g_savedLocations.size(); ++index)
-    {
-        const SavedLocation& location = g_savedLocations[index];
-
-        SavedLocationRowWidgets rowWidgets;
-        rowWidgets.locationId = location.id;
-        rowWidgets.root = g_savedLocationsRowsRoot->createWidget<MyGUI::Widget>(
-            "PanelEmpty",
-            MyGUI::IntCoord(0, rowTop, rootWidth, kSavedLocationRowHeight),
-            MyGUI::Align::Default);
-        rowWidgets.nameText = rowWidgets.root->createWidget<MyGUI::TextBox>(
-            "Kenshi_TextboxStandardText",
-            MyGUI::IntCoord(0, 0, rootWidth, 18),
-            MyGUI::Align::Default);
-        rowWidgets.teleportButton = rowWidgets.root->createWidget<MyGUI::Button>(
-            "Kenshi_Button1",
-            MyGUI::IntCoord(0, 24, 86, 24),
-            MyGUI::Align::Default);
-        rowWidgets.pinButton = rowWidgets.root->createWidget<MyGUI::Button>(
-            "Kenshi_Button1",
-            MyGUI::IntCoord(92, 24, 64, 24),
-            MyGUI::Align::Default);
-        rowWidgets.renameButton = rowWidgets.root->createWidget<MyGUI::Button>(
-            "Kenshi_Button1",
-            MyGUI::IntCoord(162, 24, 70, 24),
-            MyGUI::Align::Default);
-        rowWidgets.deleteButton = rowWidgets.root->createWidget<MyGUI::Button>(
-            "Kenshi_Button1",
-            MyGUI::IntCoord(238, 24, 62, 24),
-            MyGUI::Align::Default);
-
-        ConfigureTextWidget(rowWidgets.nameText);
-        rowWidgets.nameText->setCaption(BuildSavedLocationDisplayName(location));
-        rowWidgets.teleportButton->setCaption("Teleport");
-        rowWidgets.teleportButton->setEnabled(hasSelectedCharacters);
-        rowWidgets.pinButton->setCaption(location.pinned ? "Unpin" : "Pin");
-        rowWidgets.renameButton->setCaption(g_savedLocationRenameId == location.id ? "Cancel" : "Rename");
-        rowWidgets.deleteButton->setCaption("Delete");
-
-        rowWidgets.teleportButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationRowTeleportButtonPressed);
-        rowWidgets.pinButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationRowPinButtonPressed);
-        rowWidgets.renameButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationRowRenameButtonPressed);
-        rowWidgets.deleteButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationRowDeleteButtonPressed);
-
-        g_savedLocationRowWidgets.push_back(rowWidgets);
-        rowTop += kSavedLocationRowHeight + kSavedLocationRowGap;
-    }
-
-    const int rootHeight = rowTop > 0 ? (rowTop - kSavedLocationRowGap) : kSavedLocationEmptyHeight;
-    g_savedLocationsRowsRoot->setCoord(
-        MyGUI::IntCoord(
-            g_savedLocationsRowsRoot->getLeft(),
-            g_savedLocationsRowsRoot->getTop(),
-            rootWidth,
-            rootHeight));
-    if (g_panel)
-    {
-        ApplyPanelLayout();
-    }
+    g_savedLocationsListBox->setIndexSelected(selectedFilteredIndex);
+    g_savedLocationsListBox->beginToItemAt(selectedFilteredIndex);
+    RefreshSavedLocationActionButtons(g_lastPlayerInterface);
 }
 
 bool HasPrimarySelectedCharacter(PlayerInterface* player)
@@ -4518,37 +4502,14 @@ size_t FindSavedLocationIndexById(const std::vector<SavedLocation>& locations, c
     return locations.size();
 }
 
-SavedLocationRowWidgets* TryFindSavedLocationRowWidgets(MyGUI::Widget* widget)
+bool TryGetSelectedSavedLocation(size_t* indexOut, SavedLocation* locationOut)
 {
-    if (!widget)
-    {
-        return 0;
-    }
-
-    for (size_t index = 0; index < g_savedLocationRowWidgets.size(); ++index)
-    {
-        SavedLocationRowWidgets& rowWidgets = g_savedLocationRowWidgets[index];
-        if (widget == rowWidgets.teleportButton
-            || widget == rowWidgets.pinButton
-            || widget == rowWidgets.renameButton
-            || widget == rowWidgets.deleteButton)
-        {
-            return &rowWidgets;
-        }
-    }
-
-    return 0;
-}
-
-bool TryGetSavedLocationFromRowWidget(MyGUI::Widget* widget, size_t* indexOut, SavedLocation* locationOut)
-{
-    SavedLocationRowWidgets* rowWidgets = TryFindSavedLocationRowWidgets(widget);
-    if (!rowWidgets)
+    if (g_selectedSavedLocationId.empty())
     {
         return false;
     }
 
-    const size_t selectedIndex = FindSavedLocationIndexById(g_savedLocations, rowWidgets->locationId);
+    const size_t selectedIndex = FindSavedLocationIndexById(g_savedLocations, g_selectedSavedLocationId);
     if (selectedIndex >= g_savedLocations.size())
     {
         return false;
@@ -4603,7 +4564,8 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_saveLocationNameEdit, teleportVisible);
     SetWidgetVisible(g_saveSelectedLocationButton, teleportVisible);
     SetWidgetVisible(g_savedLocationsSectionText, teleportVisible);
-    SetWidgetVisible(g_savedLocationsRowsRoot, teleportVisible);
+    SetWidgetVisible(g_savedLocationsCollapseButton, teleportVisible);
+    SetWidgetVisible(g_savedLocationsRowsRoot, teleportVisible && !g_savedLocationsCollapsed);
 
     SetWidgetVisible(g_inventorySectionText, false);
     SetWidgetVisible(g_moneyAmountLabelText, inventoryVisible);
@@ -4803,6 +4765,20 @@ int GetWidgetBottom(MyGUI::Widget* widget, int fallbackBottom)
     return coord.top + coord.height;
 }
 
+int GetSavedLocationsContentBottomInBodyCoords()
+{
+    const int bodyTop = GetPanelBodyTop();
+    if (g_savedLocationsCollapsed)
+    {
+        const int fallbackBottom = 384 - bodyTop;
+        return GetWidgetBottom(
+            g_savedLocationsCollapseButton,
+            GetWidgetBottom(g_savedLocationsSectionText, fallbackBottom));
+    }
+
+    return GetWidgetBottom(g_savedLocationsRowsRoot, 598 - bodyTop);
+}
+
 int GetActivePanelContentBottomInBodyCoords()
 {
     const int bodyTop = GetPanelBodyTop();
@@ -4810,7 +4786,7 @@ int GetActivePanelContentBottomInBodyCoords()
     switch (g_activePanelTab)
     {
     case PanelTab_Teleport:
-        return GetWidgetBottom(g_savedLocationsRowsRoot, 484 - bodyTop);
+        return GetSavedLocationsContentBottomInBodyCoords();
     case PanelTab_Inventory:
         return GetWidgetBottom(g_spawnItemButton, 608 - bodyTop);
     case PanelTab_Health:
@@ -5260,8 +5236,16 @@ void ResetPanelWidgetPointers()
     g_saveLocationNameEdit = 0;
     g_saveSelectedLocationButton = 0;
     g_savedLocationsSectionText = 0;
+    g_savedLocationsCollapseButton = 0;
     g_savedLocationsRowsRoot = 0;
+    g_savedLocationSearchLabelText = 0;
+    g_savedLocationSearchEdit = 0;
+    g_savedLocationsListBox = 0;
     g_savedLocationsEmptyText = 0;
+    g_savedLocationTeleportButton = 0;
+    g_savedLocationPinButton = 0;
+    g_savedLocationRenameButton = 0;
+    g_savedLocationDeleteButton = 0;
     g_inventorySectionText = 0;
     g_moneyAmountLabelText = 0;
     g_moneyAmountEdit = 0;
@@ -5280,8 +5264,11 @@ void ResetPanelWidgetPointers()
     g_dangerousSectionText = 0;
     g_forceDyingButton = 0;
     g_statusText = 0;
-    g_savedLocationRowWidgets.clear();
+    g_filteredSavedLocationIndexes.clear();
     g_savedLocationRenameId.clear();
+    g_savedLocationSearchText.clear();
+    g_selectedSavedLocationId.clear();
+    g_savedLocationsCollapsed = false;
 }
 
 void DestroyPanel()
@@ -6766,14 +6753,6 @@ void SetSelectionActionButtonsEnabled(bool enabled)
     {
         g_saveSelectedLocationButton->setEnabled(enabled || !g_savedLocationRenameId.empty());
     }
-
-    for (size_t index = 0; index < g_savedLocationRowWidgets.size(); ++index)
-    {
-        if (g_savedLocationRowWidgets[index].teleportButton)
-        {
-            g_savedLocationRowWidgets[index].teleportButton->setEnabled(enabled);
-        }
-    }
 }
 
 int GetSelectedCharacterCount(PlayerInterface* player)
@@ -6810,6 +6789,38 @@ int GetSelectedCharacterCount(PlayerInterface* player)
     return selectedCharacterCount;
 }
 
+void RefreshSavedLocationActionButtons(PlayerInterface* player)
+{
+    SavedLocation location;
+    const bool hasSelectedLocation = TryGetSelectedSavedLocation(0, &location);
+    const bool hasSelectedCharacters = GetSelectedCharacterCount(player) > 0;
+
+    if (g_savedLocationTeleportButton)
+    {
+        g_savedLocationTeleportButton->setCaption("Teleport");
+        g_savedLocationTeleportButton->setEnabled(hasSelectedLocation && hasSelectedCharacters);
+    }
+
+    if (g_savedLocationPinButton)
+    {
+        g_savedLocationPinButton->setCaption((hasSelectedLocation && location.pinned) ? "Unpin" : "Pin");
+        g_savedLocationPinButton->setEnabled(hasSelectedLocation);
+    }
+
+    if (g_savedLocationRenameButton)
+    {
+        g_savedLocationRenameButton->setCaption(
+            (hasSelectedLocation && g_savedLocationRenameId == location.id) ? "Cancel" : "Rename");
+        g_savedLocationRenameButton->setEnabled(hasSelectedLocation);
+    }
+
+    if (g_savedLocationDeleteButton)
+    {
+        g_savedLocationDeleteButton->setCaption("Delete");
+        g_savedLocationDeleteButton->setEnabled(hasSelectedLocation);
+    }
+}
+
 void UpdateSelectionActionButtons(PlayerInterface* player)
 {
     const bool hasSelectedCharacters = GetSelectedCharacterCount(player) > 0;
@@ -6820,13 +6831,7 @@ void UpdateSelectionActionButtons(PlayerInterface* player)
         g_saveSelectedLocationButton->setEnabled(!g_savedLocationRenameId.empty() || HasPrimarySelectedCharacter(player));
     }
 
-    for (size_t index = 0; index < g_savedLocationRowWidgets.size(); ++index)
-    {
-        if (g_savedLocationRowWidgets[index].teleportButton)
-        {
-            g_savedLocationRowWidgets[index].teleportButton->setEnabled(hasSelectedCharacters);
-        }
-    }
+    RefreshSavedLocationActionButtons(player);
 }
 
 void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)
@@ -8927,6 +8932,56 @@ void OnSaveLocationNameTextChanged(MyGUI::EditBox*)
     UpdateSelectionActionButtons(g_lastPlayerInterface);
 }
 
+void OnSavedLocationsCollapseButtonClicked(MyGUI::Widget*)
+{
+    g_savedLocationsCollapsed = !g_savedLocationsCollapsed;
+    UpdateSavedLocationsCollapseButtonCaption();
+    ApplyPanelLayout();
+}
+
+void OnSavedLocationsCollapseButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnSavedLocationsCollapseButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnSavedLocationSearchTextChanged(MyGUI::EditBox* sender)
+{
+    g_savedLocationSearchText = sender ? sender->getOnlyText().asUTF8() : "";
+    RefreshSavedLocationsListWidget();
+}
+
+void OnSavedLocationsListSelectionChanged(MyGUI::ListBox*, size_t index)
+{
+    if (index >= g_filteredSavedLocationIndexes.size())
+    {
+        g_selectedSavedLocationId.clear();
+        RefreshSavedLocationActionButtons(g_lastPlayerInterface);
+        return;
+    }
+
+    const size_t locationIndex = g_filteredSavedLocationIndexes[index];
+    if (locationIndex >= g_savedLocations.size())
+    {
+        g_selectedSavedLocationId.clear();
+        RefreshSavedLocationActionButtons(g_lastPlayerInterface);
+        return;
+    }
+
+    g_selectedSavedLocationId = g_savedLocations[locationIndex].id;
+    RefreshSavedLocationActionButtons(g_lastPlayerInterface);
+}
+
 void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*)
 {
     const bool renameMode = !g_savedLocationRenameId.empty();
@@ -9002,6 +9057,12 @@ void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*)
         const std::string renamedLocationId = g_savedLocationRenameId;
         g_savedLocations.swap(updatedLocations);
         ClearSavedLocationRenameState(true);
+        g_selectedSavedLocationId = renamedLocationId;
+        g_savedLocationSearchText.clear();
+        if (g_savedLocationSearchEdit)
+        {
+            g_savedLocationSearchEdit->setOnlyText("");
+        }
         RefreshSavedLocationsListWidget();
         UpdateSelectionActionButtons(g_lastPlayerInterface);
 
@@ -9099,6 +9160,12 @@ void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*)
 
     g_savedLocations.swap(updatedLocations);
     ClearSavedLocationRenameState(true);
+    g_selectedSavedLocationId = location.id;
+    g_savedLocationSearchText.clear();
+    if (g_savedLocationSearchEdit)
+    {
+        g_savedLocationSearchEdit->setOnlyText("");
+    }
     RefreshSavedLocationsListWidget();
     UpdateSelectionActionButtons(g_lastPlayerInterface);
 
@@ -9132,17 +9199,17 @@ void OnSaveSelectedLocationButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseB
     }
 }
 
-void OnSavedLocationRowTeleportButtonClicked(MyGUI::Widget* sender)
+void OnSavedLocationTeleportButtonClicked(MyGUI::Widget*)
 {
     const char* actionId = "teleport_selected_to_saved_location";
     LogActionRequested(actionId);
 
     SavedLocation location;
     size_t locationIndex = 0u;
-    if (!TryGetSavedLocationFromRowWidget(sender, &locationIndex, &location))
+    if (!TryGetSelectedSavedLocation(&locationIndex, &location))
     {
         LogInfoLine("event=testkit_action_result action=\"teleport_selected_to_saved_location\" success=false reason=\"no_saved_location\"");
-        SetStatusMessage("Teleport failed - saved location row unavailable");
+        SetStatusMessage("Teleport failed - no saved location selected");
         return;
     }
 
@@ -9271,7 +9338,7 @@ void OnSavedLocationRowTeleportButtonClicked(MyGUI::Widget* sender)
     UpdateTargetInspection(g_lastPlayerInterface);
 }
 
-void OnSavedLocationRowTeleportButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::MouseButton id)
+void OnSavedLocationTeleportButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
 {
     if (id != MyGUI::MouseButton::Left)
     {
@@ -9279,7 +9346,7 @@ void OnSavedLocationRowTeleportButtonPressed(MyGUI::Widget* sender, int, int, My
     }
 
     MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
-    OnSavedLocationRowTeleportButtonClicked(sender);
+    OnSavedLocationTeleportButtonClicked(0);
 
     if (inputManager)
     {
@@ -9287,17 +9354,17 @@ void OnSavedLocationRowTeleportButtonPressed(MyGUI::Widget* sender, int, int, My
     }
 }
 
-void OnSavedLocationRowPinButtonClicked(MyGUI::Widget* sender)
+void OnSavedLocationPinButtonClicked(MyGUI::Widget*)
 {
     const char* actionId = "toggle_saved_location_pin";
     LogActionRequested(actionId);
 
     SavedLocation location;
     size_t locationIndex = 0u;
-    if (!TryGetSavedLocationFromRowWidget(sender, &locationIndex, &location))
+    if (!TryGetSelectedSavedLocation(&locationIndex, &location))
     {
         LogInfoLine("event=testkit_action_result action=\"toggle_saved_location_pin\" success=false reason=\"no_saved_location\"");
-        SetStatusMessage("Pin failed - saved location row unavailable");
+        SetStatusMessage("Pin failed - no saved location selected");
         return;
     }
 
@@ -9332,7 +9399,7 @@ void OnSavedLocationRowPinButtonClicked(MyGUI::Widget* sender)
     SetStatusMessage(std::string(pinned ? "Pinned location " : "Unpinned location ") + location.name);
 }
 
-void OnSavedLocationRowPinButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::MouseButton id)
+void OnSavedLocationPinButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
 {
     if (id != MyGUI::MouseButton::Left)
     {
@@ -9340,7 +9407,7 @@ void OnSavedLocationRowPinButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::
     }
 
     MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
-    OnSavedLocationRowPinButtonClicked(sender);
+    OnSavedLocationPinButtonClicked(0);
 
     if (inputManager)
     {
@@ -9348,13 +9415,13 @@ void OnSavedLocationRowPinButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::
     }
 }
 
-void OnSavedLocationRowRenameButtonClicked(MyGUI::Widget* sender)
+void OnSavedLocationRenameButtonClicked(MyGUI::Widget*)
 {
     SavedLocation location;
-    if (!TryGetSavedLocationFromRowWidget(sender, 0, &location))
+    if (!TryGetSelectedSavedLocation(0, &location))
     {
         LogInfoLine("event=testkit_action_result action=\"rename_saved_location\" success=false reason=\"no_saved_location\"");
-        SetStatusMessage("Rename Location failed - saved location row unavailable");
+        SetStatusMessage("Rename Location failed - no saved location selected");
         return;
     }
 
@@ -9389,7 +9456,7 @@ void OnSavedLocationRowRenameButtonClicked(MyGUI::Widget* sender)
     SetStatusMessage(std::string("Rename location ") + location.name + " and click Save Rename");
 }
 
-void OnSavedLocationRowRenameButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::MouseButton id)
+void OnSavedLocationRenameButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
 {
     if (id != MyGUI::MouseButton::Left)
     {
@@ -9397,7 +9464,7 @@ void OnSavedLocationRowRenameButtonPressed(MyGUI::Widget* sender, int, int, MyGU
     }
 
     MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
-    OnSavedLocationRowRenameButtonClicked(sender);
+    OnSavedLocationRenameButtonClicked(0);
 
     if (inputManager)
     {
@@ -9405,17 +9472,17 @@ void OnSavedLocationRowRenameButtonPressed(MyGUI::Widget* sender, int, int, MyGU
     }
 }
 
-void OnSavedLocationRowDeleteButtonClicked(MyGUI::Widget* sender)
+void OnSavedLocationDeleteButtonClicked(MyGUI::Widget*)
 {
     const char* actionId = "delete_saved_location";
     LogActionRequested(actionId);
 
     SavedLocation location;
     size_t locationIndex = 0u;
-    if (!TryGetSavedLocationFromRowWidget(sender, &locationIndex, &location))
+    if (!TryGetSelectedSavedLocation(&locationIndex, &location))
     {
         LogInfoLine("event=testkit_action_result action=\"delete_saved_location\" success=false reason=\"no_saved_location\"");
-        SetStatusMessage("Delete Location failed - saved location row unavailable");
+        SetStatusMessage("Delete Location failed - no saved location selected");
         return;
     }
 
@@ -9452,7 +9519,7 @@ void OnSavedLocationRowDeleteButtonClicked(MyGUI::Widget* sender)
     SetStatusMessage(std::string("Deleted location ") + location.name);
 }
 
-void OnSavedLocationRowDeleteButtonPressed(MyGUI::Widget* sender, int, int, MyGUI::MouseButton id)
+void OnSavedLocationDeleteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
 {
     if (id != MyGUI::MouseButton::Left)
     {
@@ -9460,7 +9527,7 @@ void OnSavedLocationRowDeleteButtonPressed(MyGUI::Widget* sender, int, int, MyGU
     }
 
     MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
-    OnSavedLocationRowDeleteButtonClicked(sender);
+    OnSavedLocationDeleteButtonClicked(0);
 
     if (inputManager)
     {
@@ -9920,8 +9987,16 @@ bool HasAllPanelWidgets()
         && g_saveLocationNameEdit
         && g_saveSelectedLocationButton
         && g_savedLocationsSectionText
+        && g_savedLocationsCollapseButton
         && g_savedLocationsRowsRoot
+        && g_savedLocationSearchLabelText
+        && g_savedLocationSearchEdit
+        && g_savedLocationsListBox
         && g_savedLocationsEmptyText
+        && g_savedLocationTeleportButton
+        && g_savedLocationPinButton
+        && g_savedLocationRenameButton
+        && g_savedLocationDeleteButton
         && g_inventorySectionText
         && g_moneyAmountLabelText
         && g_moneyAmountEdit
@@ -9978,6 +10053,7 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_teleportSectionText);
     ConfigureTextWidget(g_saveLocationNameLabelText);
     ConfigureTextWidget(g_savedLocationsSectionText);
+    ConfigureTextWidget(g_savedLocationSearchLabelText);
     ConfigureTextWidget(g_savedLocationsEmptyText);
     ConfigureTextWidget(g_inventorySectionText);
     ConfigureTextWidget(g_moneyAmountLabelText);
@@ -9990,12 +10066,18 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_statusText);
     ApplySectionHeaderFonts();
     ConfigureEditBoxWidget(g_saveLocationNameEdit);
+    ConfigureEditBoxWidget(g_savedLocationSearchEdit);
     ConfigureEditBoxWidget(g_moneyAmountEdit);
     ConfigureEditBoxWidget(g_itemSearchEdit);
     ConfigureEditBoxWidget(g_itemQuantityEdit);
     ConfigureComboBoxWidget(g_itemCategoryDropdown);
     ConfigureComboBoxWidget(g_itemDropdown);
+    ConfigureListBoxWidget(g_savedLocationsListBox);
     ConfigureListBoxWidget(g_itemSearchResultsList);
+
+    g_savedLocationsRowsRoot->setNeedMouseFocus(false);
+    g_savedLocationsRowsRoot->setInheritsPick(true);
+    g_savedLocationsEmptyText->setNeedMouseFocus(false);
 
     g_targetSectionText->setCaption("Target");
     g_targetNameText->setCaption("Name: Pending target inspection");
@@ -10010,6 +10092,7 @@ void InitializePanelWidgets()
     g_teleportSectionText->setCaption("Teleport");
     g_saveLocationNameLabelText->setCaption("Location Name");
     g_savedLocationsSectionText->setCaption("Saved Locations");
+    g_savedLocationSearchLabelText->setCaption("Search Saved Locations");
     g_inventorySectionText->setCaption("");
     g_moneyAmountLabelText->setCaption("Cats To Add");
     g_spawnFoodSectionText->setCaption("Spawn Items");
@@ -10030,8 +10113,16 @@ void InitializePanelWidgets()
     g_saveLocationNameEdit->setEditStatic(false);
     g_saveLocationNameEdit->setMaxTextLength(64);
     g_saveLocationNameEdit->setOnlyText("");
+    g_savedLocationSearchEdit->setEditStatic(false);
+    g_savedLocationSearchEdit->setMaxTextLength(64);
+    g_savedLocationSearchEdit->setOnlyText("");
     RefreshSaveLocationInputUi();
     g_savedLocationsEmptyText->setCaption("No saved locations yet");
+    UpdateSavedLocationsCollapseButtonCaption();
+    g_savedLocationTeleportButton->setCaption("Teleport");
+    g_savedLocationPinButton->setCaption("Pin");
+    g_savedLocationRenameButton->setCaption("Rename");
+    g_savedLocationDeleteButton->setCaption("Delete");
     RefreshSavedLocationsListWidget();
     g_moneyAmountEdit->setEditStatic(false);
     g_moneyAmountEdit->setMaxTextLength(10);
@@ -10076,6 +10167,13 @@ void InitializePanelWidgets()
     g_teleportSelectedToCameraButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportSelectedToCameraButtonPressed);
     g_saveLocationNameEdit->eventEditTextChange += MyGUI::newDelegate(&OnSaveLocationNameTextChanged);
     g_saveSelectedLocationButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSaveSelectedLocationButtonPressed);
+    g_savedLocationsCollapseButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationsCollapseButtonPressed);
+    g_savedLocationSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnSavedLocationSearchTextChanged);
+    g_savedLocationsListBox->eventListChangePosition += MyGUI::newDelegate(&OnSavedLocationsListSelectionChanged);
+    g_savedLocationTeleportButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationTeleportButtonPressed);
+    g_savedLocationPinButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationPinButtonPressed);
+    g_savedLocationRenameButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationRenameButtonPressed);
+    g_savedLocationDeleteButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSavedLocationDeleteButtonPressed);
     g_addMoneyButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnAddMoneyButtonPressed);
     g_itemCategoryDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnInventoryCategoryChanged);
     g_itemSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnInventoryItemSearchTextChanged);
@@ -10285,15 +10383,47 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_savedLocationsSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 360, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 360, kPanelWidth - 60, 20),
+        MyGUI::Align::Default);
+    g_savedLocationsCollapseButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(kPanelWidth - 46, 356, 26, 28),
         MyGUI::Align::Default);
     g_savedLocationsRowsRoot = bodyParent->createWidget<MyGUI::Widget>(
         "PanelEmpty",
-        BuildBodyCoord(20, 384, kPanelWidth - 40, kSavedLocationEmptyHeight),
+        BuildBodyCoord(20, 388, kPanelWidth - 40, kSavedLocationsSectionContentHeight),
+        MyGUI::Align::Default);
+    g_savedLocationSearchLabelText = g_savedLocationsRowsRoot->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        MyGUI::IntCoord(0, 0, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_savedLocationSearchEdit = g_savedLocationsRowsRoot->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        MyGUI::IntCoord(0, 22, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_savedLocationsListBox = g_savedLocationsRowsRoot->createWidget<MyGUI::ListBox>(
+        "Kenshi_ListBox",
+        MyGUI::IntCoord(0, 56, kPanelWidth - 40, kSavedLocationsListHeight),
         MyGUI::Align::Default);
     g_savedLocationsEmptyText = g_savedLocationsRowsRoot->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        MyGUI::IntCoord(0, 0, kPanelWidth - 40, kSavedLocationEmptyHeight),
+        MyGUI::IntCoord(0, 56, kPanelWidth - 40, kSavedLocationEmptyHeight),
+        MyGUI::Align::Default);
+    g_savedLocationTeleportButton = g_savedLocationsRowsRoot->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(0, 182, 86, 28),
+        MyGUI::Align::Default);
+    g_savedLocationPinButton = g_savedLocationsRowsRoot->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(92, 182, 64, 28),
+        MyGUI::Align::Default);
+    g_savedLocationRenameButton = g_savedLocationsRowsRoot->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(162, 182, 70, 28),
+        MyGUI::Align::Default);
+    g_savedLocationDeleteButton = g_savedLocationsRowsRoot->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        MyGUI::IntCoord(238, 182, 62, 28),
         MyGUI::Align::Default);
     g_inventorySectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
