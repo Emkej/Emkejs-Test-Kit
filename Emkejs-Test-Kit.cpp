@@ -3606,6 +3606,22 @@ void FocusCameraOnTeleportedSelection(PlayerInterface* player, const Ogre::Vecto
     }
 }
 
+void StopTeleportedSelectionMovement(PlayerInterface* player)
+{
+    if (!player)
+    {
+        return;
+    }
+
+    __try
+    {
+        player->stopCharactersMovement();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
 bool AreFloatsNearlyEqual(float left, float right)
 {
     return std::fabs(left - right) <= kFloatChangeEpsilon;
@@ -7851,6 +7867,7 @@ bool TryTeleportSelectedCharactersToCamera(
 
         if (teleportedCount > 0)
         {
+            StopTeleportedSelectionMovement(player);
             FocusCameraOnTeleportedSelection(player, resolvedDestination);
         }
     }
