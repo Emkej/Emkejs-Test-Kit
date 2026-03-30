@@ -16,6 +16,7 @@
 #include <kenshi/Kenshi.h>
 #include <kenshi/MedicalSystem.h>
 #include <kenshi/PlayerInterface.h>
+#include <kenshi/Platoon.h>
 #include <kenshi/RootObject.h>
 #include <kenshi/RootObjectFactory.h>
 #include <kenshi/SaveManager.h>
@@ -88,6 +89,13 @@ const float kForceDyingBloodOffset = 8.0f;
 const float kForceDyingAliveBloodMargin = 1.0f;
 const float kProbablyDyingBloodMax = 50.0f;
 const float kLimbDamageFraction = 0.35f;
+const int kSpawnTemplateQuantityMax = 20;
+const float kSpawnTemplateBaseRadius = 180.0f;
+const float kSpawnTemplateRingSpacing = 120.0f;
+const int kSpawnTemplateFirstRingSlots = 6;
+const int kSpawnTemplateMaxPlacementAttemptsPerUnit = 4;
+const float kSpawnTemplateMaxResolvedDrift = 500.0f;
+const float kPi = 3.14159265358979323846f;
 const float kMinimumLimbDamageAmount = 5.0f;
 const float kFloatChangeEpsilon = 0.001f;
 const int kSavedLocationsSectionContentHeight = 210;
@@ -231,7 +239,8 @@ enum PanelTab
 {
     PanelTab_Health = 0,
     PanelTab_Teleport = 1,
-    PanelTab_Inventory = 2
+    PanelTab_Inventory = 2,
+    PanelTab_Spawn = 3
 };
 
 enum InventorySpawnCategory
@@ -264,6 +273,44 @@ struct InventorySpawnOption
     std::string displayName;
     std::string searchTextUpper;
     GameData* itemData;
+};
+
+enum SpawnTemplateCategory
+{
+    SpawnTemplateCategory_All = 0,
+    SpawnTemplateCategory_Characters = 1,
+    SpawnTemplateCategory_Creatures = 2
+};
+
+struct SpawnTemplateOption
+{
+    std::string displayName;
+    std::string listLabel;
+    std::string summaryLabel;
+    std::string searchTextUpper;
+    SpawnTemplateCategory category;
+    GameData* templateData;
+};
+
+struct SpawnTemplateApplyResult
+{
+    SpawnTemplateApplyResult()
+        : success(false)
+        , requestedCount(0)
+        , spawnedCount(0)
+        , validSpawnCount(0)
+        , creationFailureCount(0)
+        , usedTargetPlatoonFallback(false)
+    {
+    }
+
+    bool success;
+    int requestedCount;
+    int spawnedCount;
+    int validSpawnCount;
+    int creationFailureCount;
+    bool usedTargetPlatoonFallback;
+    std::string message;
 };
 
 struct SavedLocation
@@ -492,6 +539,7 @@ MyGUI::TextBox* g_noTargetText = 0;
 MyGUI::Button* g_healthTabButton = 0;
 MyGUI::Button* g_teleportTabButton = 0;
 MyGUI::Button* g_inventoryTabButton = 0;
+MyGUI::Button* g_spawnTabButton = 0;
 MyGUI::TextBox* g_statesSectionText = 0;
 MyGUI::Button* g_fullRestoreButton = 0;
 MyGUI::Button* g_forceUnconsciousButton = 0;
@@ -529,12 +577,26 @@ MyGUI::ListBox* g_itemSearchResultsList = 0;
 MyGUI::TextBox* g_itemQuantityLabelText = 0;
 MyGUI::EditBox* g_itemQuantityEdit = 0;
 MyGUI::Button* g_spawnItemButton = 0;
+MyGUI::TextBox* g_spawnSectionText = 0;
+MyGUI::TextBox* g_spawnCategoryLabelText = 0;
+MyGUI::ComboBox* g_spawnCategoryDropdown = 0;
+MyGUI::TextBox* g_spawnSearchLabelText = 0;
+MyGUI::EditBox* g_spawnSearchEdit = 0;
+MyGUI::TextBox* g_spawnResultCountText = 0;
+MyGUI::ListBox* g_spawnResultsList = 0;
+MyGUI::TextBox* g_spawnSelectedSummaryText = 0;
+MyGUI::TextBox* g_spawnQuantityLabelText = 0;
+MyGUI::EditBox* g_spawnQuantityEdit = 0;
+MyGUI::TextBox* g_spawnPreviewText = 0;
+MyGUI::Button* g_spawnCharactersButton = 0;
 MyGUI::TextBox* g_dangerousSectionText = 0;
 MyGUI::Button* g_forceDyingButton = 0;
 MyGUI::TextBox* g_statusText = 0;
 
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
+std::vector<SpawnTemplateOption> g_spawnTemplateOptions;
+std::vector<size_t> g_filteredSpawnTemplateOptionIndexes;
 std::vector<SavedLocation> g_savedLocations;
 std::vector<size_t> g_filteredSavedLocationIndexes;
 std::string g_savedLocationRenameId;
@@ -542,6 +604,7 @@ std::string g_savedLocationSearchText;
 std::string g_selectedSavedLocationId;
 bool g_savedLocationsCollapsed = false;
 bool g_inventoryFoodItemOptionsLoaded = false;
+bool g_spawnTemplateOptionsLoaded = false;
 PendingInventorySearchShortcut g_pendingInventorySearchShortcut;
 bool g_haveInventorySearchEditSnapshot = false;
 InventorySearchSnapshot g_inventorySearchEditSnapshot;
@@ -559,9 +622,12 @@ void ConfigureTextWidget(MyGUI::TextBox* widget);
 void SetActivePanelTab(PanelTab tab);
 void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*);
 bool TryResolveSelectedInventoryFoodItem(GameData** itemDataOut, std::string* itemLabelOut);
+bool TryResolveSelectedSpawnTemplate(GameData** templateDataOut, std::string* displayNameOut, std::string* summaryLabelOut);
 bool TryGetSelectedSavedLocation(size_t* indexOut, SavedLocation* locationOut);
 void RefreshSavedLocationActionButtons(PlayerInterface* player);
 void RefreshInventorySpawnButtonState();
+void RefreshSpawnButtonState();
+void RefreshSpawnPreviewText();
 void OnSavedLocationsCollapseButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSaveLocationNameAccepted(MyGUI::EditBox*);
 void OnSavedLocationSearchTextChanged(MyGUI::EditBox*);
@@ -571,7 +637,10 @@ void OnSavedLocationPinButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButto
 void OnSavedLocationRenameButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSavedLocationDeleteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnInventorySearchResultsSelectionChanged(MyGUI::ListBox*, size_t);
+void OnSpawnResultsSelectionChanged(MyGUI::ListBox*, size_t);
 std::string SafeCharacterName(Character* target);
+std::string FormatPointerValue(const void* pointer);
+float ComputeHorizontalDistance(const Ogre::Vector3& a, const Ogre::Vector3& b);
 bool TryGetCharacterPositionSnapshot(Character* character, CharacterPositionSnapshot* outSnapshot);
 
 bool IsSupportedVersion(KenshiLib::BinaryVersion& versionInfo)
@@ -1059,6 +1128,154 @@ bool DoesInventorySpawnOptionMatchSearch(const InventorySpawnOption& option, con
 {
     return searchUpper.empty() || option.searchTextUpper.find(searchUpper) != std::string::npos;
 }
+
+const char* SpawnTemplateCategoryToTypeLabel(SpawnTemplateCategory category)
+{
+    switch (category)
+    {
+    case SpawnTemplateCategory_Characters:
+        return "Character";
+    case SpawnTemplateCategory_Creatures:
+        return "Creature";
+    case SpawnTemplateCategory_All:
+    default:
+        return "Template";
+    }
+}
+
+SpawnTemplateCategory GetSelectedSpawnTemplateCategory()
+{
+    if (!g_spawnCategoryDropdown)
+    {
+        return SpawnTemplateCategory_All;
+    }
+
+    switch (g_spawnCategoryDropdown->getIndexSelected())
+    {
+    case 1:
+        return SpawnTemplateCategory_Characters;
+    case 2:
+        return SpawnTemplateCategory_Creatures;
+    default:
+        return SpawnTemplateCategory_All;
+    }
+}
+
+std::string BuildSpawnTemplateDisplayName(GameData* templateData)
+{
+    if (!templateData)
+    {
+        return "";
+    }
+
+    const std::string name = TrimAscii(templateData->name);
+    if (!name.empty())
+    {
+        return name;
+    }
+
+    const std::string stringId = TrimAscii(templateData->stringID);
+    if (!stringId.empty())
+    {
+        return stringId;
+    }
+
+    std::stringstream fallback;
+    fallback << SpawnTemplateCategoryToTypeLabel(
+        templateData->type == ANIMAL_CHARACTER ? SpawnTemplateCategory_Creatures : SpawnTemplateCategory_Characters)
+             << " " << templateData->id;
+    return fallback.str();
+}
+
+std::string BuildSpawnTemplateSearchText(
+    GameData* templateData,
+    const std::string& displayName,
+    const char* typeLabel)
+{
+    std::string searchTextUpper = ToUpperAscii(displayName);
+    if (typeLabel && *typeLabel)
+    {
+        searchTextUpper += " ";
+        searchTextUpper += ToUpperAscii(typeLabel);
+    }
+
+    if (!templateData)
+    {
+        return searchTextUpper;
+    }
+
+    const std::string stringId = TrimAscii(templateData->stringID);
+    if (!stringId.empty())
+    {
+        searchTextUpper += " ";
+        searchTextUpper += ToUpperAscii(stringId);
+    }
+
+    return searchTextUpper;
+}
+
+bool DoesSpawnTemplateMatchCategory(const SpawnTemplateOption& option, SpawnTemplateCategory category)
+{
+    return category == SpawnTemplateCategory_All || option.category == category;
+}
+
+bool DoesSpawnTemplateMatchSearch(const SpawnTemplateOption& option, const std::string& searchUpper)
+{
+    return searchUpper.empty() || option.searchTextUpper.find(searchUpper) != std::string::npos;
+}
+
+bool HasSpawnTemplateOptionForData(GameData* templateData)
+{
+    if (!templateData)
+    {
+        return false;
+    }
+
+    for (size_t index = 0; index < g_spawnTemplateOptions.size(); ++index)
+    {
+        if (g_spawnTemplateOptions[index].templateData == templateData)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void AddSpawnTemplateOptionsForType(itemType dataType, SpawnTemplateCategory category)
+{
+    if (!ou || !ou->initialized)
+    {
+        return;
+    }
+
+    lektor<GameData*> templateDatas;
+    ou->gamedata.getDataOfType(templateDatas, dataType);
+
+    for (lektor<GameData*>::const_iterator it = templateDatas.begin(); it != templateDatas.end(); ++it)
+    {
+        GameData* templateData = *it;
+        if (!templateData || !templateData->isValid() || HasSpawnTemplateOptionForData(templateData))
+        {
+            continue;
+        }
+
+        SpawnTemplateOption option;
+        option.displayName = BuildSpawnTemplateDisplayName(templateData);
+        option.category = category;
+        option.templateData = templateData;
+        option.listLabel = option.displayName + " (" + SpawnTemplateCategoryToTypeLabel(category) + ")";
+        option.summaryLabel = option.displayName + " · " + SpawnTemplateCategoryToTypeLabel(category);
+        option.searchTextUpper = BuildSpawnTemplateSearchText(
+            templateData,
+            option.displayName,
+            SpawnTemplateCategoryToTypeLabel(category));
+        g_spawnTemplateOptions.push_back(option);
+    }
+}
+
+void EnsureSpawnTemplateOptionsLoaded();
+void RefreshSpawnTemplateList();
 
 void EnsureInventoryFoodItemOptionsLoaded();
 void RefreshInventoryFoodItemDropdown();
@@ -3332,6 +3549,222 @@ bool TryResolveSelectedInventoryFoodItem(GameData** itemDataOut, std::string* it
     return true;
 }
 
+bool TryResolveSelectedSpawnTemplate(
+    GameData** templateDataOut,
+    std::string* displayNameOut,
+    std::string* summaryLabelOut)
+{
+    if (templateDataOut)
+    {
+        *templateDataOut = 0;
+    }
+    if (displayNameOut)
+    {
+        displayNameOut->clear();
+    }
+    if (summaryLabelOut)
+    {
+        summaryLabelOut->clear();
+    }
+
+    if (!g_spawnResultsList || g_filteredSpawnTemplateOptionIndexes.empty())
+    {
+        return false;
+    }
+
+    const size_t selectedIndex = g_spawnResultsList->getIndexSelected();
+    if (selectedIndex >= g_filteredSpawnTemplateOptionIndexes.size())
+    {
+        return false;
+    }
+
+    const SpawnTemplateOption& option =
+        g_spawnTemplateOptions[g_filteredSpawnTemplateOptionIndexes[selectedIndex]];
+    if (!option.templateData)
+    {
+        return false;
+    }
+
+    if (templateDataOut)
+    {
+        *templateDataOut = option.templateData;
+    }
+    if (displayNameOut)
+    {
+        *displayNameOut = option.displayName;
+    }
+    if (summaryLabelOut)
+    {
+        *summaryLabelOut = option.summaryLabel;
+    }
+
+    return true;
+}
+
+bool TryGetSpawnTemplateQuantity(int* outQuantity)
+{
+    if (!outQuantity || !g_spawnQuantityEdit)
+    {
+        return false;
+    }
+
+    int quantity = 0;
+    if (!TryParsePositiveInt(TrimAscii(g_spawnQuantityEdit->getOnlyText().asUTF8()), &quantity))
+    {
+        return false;
+    }
+
+    if (quantity < 1 || quantity > kSpawnTemplateQuantityMax)
+    {
+        return false;
+    }
+
+    *outQuantity = quantity;
+    return true;
+}
+
+void RefreshSpawnTemplateList()
+{
+    if (!g_spawnResultsList)
+    {
+        g_filteredSpawnTemplateOptionIndexes.clear();
+        if (g_spawnResultCountText)
+        {
+            g_spawnResultCountText->setCaption("0 results");
+        }
+        return;
+    }
+
+    GameData* previouslySelectedTemplate = 0;
+    const size_t previousSelectedIndex = g_spawnResultsList->getIndexSelected();
+    if (previousSelectedIndex < g_filteredSpawnTemplateOptionIndexes.size())
+    {
+        previouslySelectedTemplate =
+            g_spawnTemplateOptions[g_filteredSpawnTemplateOptionIndexes[previousSelectedIndex]].templateData;
+    }
+
+    g_spawnResultsList->removeAllItems();
+    g_filteredSpawnTemplateOptionIndexes.clear();
+
+    std::string searchUpper;
+    if (g_spawnSearchEdit)
+    {
+        searchUpper = ToUpperAscii(TrimAscii(g_spawnSearchEdit->getOnlyText().asUTF8()));
+    }
+    const SpawnTemplateCategory category = GetSelectedSpawnTemplateCategory();
+
+    for (size_t index = 0; index < g_spawnTemplateOptions.size(); ++index)
+    {
+        const SpawnTemplateOption& option = g_spawnTemplateOptions[index];
+        if (!DoesSpawnTemplateMatchCategory(option, category)
+            || !DoesSpawnTemplateMatchSearch(option, searchUpper))
+        {
+            continue;
+        }
+
+        g_filteredSpawnTemplateOptionIndexes.push_back(index);
+        g_spawnResultsList->addItem(option.listLabel);
+    }
+
+    if (g_spawnResultCountText)
+    {
+        if (!g_spawnTemplateOptionsLoaded)
+        {
+            g_spawnResultCountText->setCaption("Loading...");
+        }
+        else
+        {
+            std::stringstream caption;
+            caption << g_filteredSpawnTemplateOptionIndexes.size() << " results";
+            g_spawnResultCountText->setCaption(caption.str());
+        }
+    }
+
+    if (g_filteredSpawnTemplateOptionIndexes.empty())
+    {
+        if (!g_spawnTemplateOptionsLoaded)
+        {
+            g_spawnResultsList->addItem("Loading spawn templates...");
+        }
+        else if (g_spawnTemplateOptions.empty())
+        {
+            g_spawnResultsList->addItem("No spawn templates available");
+        }
+        else
+        {
+            g_spawnResultsList->addItem("No matching spawn templates");
+        }
+
+        g_spawnResultsList->clearIndexSelected();
+        g_spawnResultsList->beginToItemFirst();
+        RefreshSpawnButtonState();
+        RefreshSpawnPreviewText();
+        return;
+    }
+
+    size_t nextSelectedIndex = MyGUI::ITEM_NONE;
+    if (previouslySelectedTemplate)
+    {
+        for (size_t filteredIndex = 0; filteredIndex < g_filteredSpawnTemplateOptionIndexes.size(); ++filteredIndex)
+        {
+            if (g_spawnTemplateOptions[g_filteredSpawnTemplateOptionIndexes[filteredIndex]].templateData
+                == previouslySelectedTemplate)
+            {
+                nextSelectedIndex = filteredIndex;
+                break;
+            }
+        }
+    }
+
+    if (nextSelectedIndex == MyGUI::ITEM_NONE && g_filteredSpawnTemplateOptionIndexes.size() == 1u)
+    {
+        nextSelectedIndex = 0u;
+    }
+
+    if (nextSelectedIndex != MyGUI::ITEM_NONE)
+    {
+        g_spawnResultsList->setIndexSelected(nextSelectedIndex);
+        g_spawnResultsList->beginToItemSelected();
+    }
+    else
+    {
+        g_spawnResultsList->clearIndexSelected();
+        g_spawnResultsList->beginToItemFirst();
+    }
+
+    RefreshSpawnButtonState();
+    RefreshSpawnPreviewText();
+}
+
+void EnsureSpawnTemplateOptionsLoaded()
+{
+    if (g_spawnTemplateOptionsLoaded || !ou || !ou->initialized)
+    {
+        return;
+    }
+
+    g_spawnTemplateOptions.clear();
+    AddSpawnTemplateOptionsForType(CHARACTER, SpawnTemplateCategory_Characters);
+    AddSpawnTemplateOptionsForType(HUMAN_CHARACTER, SpawnTemplateCategory_Characters);
+    AddSpawnTemplateOptionsForType(ANIMAL_CHARACTER, SpawnTemplateCategory_Creatures);
+
+    std::sort(
+        g_spawnTemplateOptions.begin(),
+        g_spawnTemplateOptions.end(),
+        [](const SpawnTemplateOption& left, const SpawnTemplateOption& right) -> bool
+        {
+            if (left.displayName != right.displayName)
+            {
+                return left.displayName < right.displayName;
+            }
+
+            return left.listLabel < right.listLabel;
+        });
+
+    g_spawnTemplateOptionsLoaded = true;
+    RefreshSpawnTemplateList();
+}
+
 void UpdatePanelTabButtonCaptions()
 {
     if (g_healthTabButton)
@@ -3347,6 +3780,11 @@ void UpdatePanelTabButtonCaptions()
     if (g_inventoryTabButton)
     {
         g_inventoryTabButton->setCaption(g_activePanelTab == PanelTab_Inventory ? "[Inventory]" : "Inventory");
+    }
+
+    if (g_spawnTabButton)
+    {
+        g_spawnTabButton->setCaption(g_activePanelTab == PanelTab_Spawn ? "[Spawn]" : "Spawn");
     }
 }
 
@@ -4489,6 +4927,7 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     const bool healthVisible = bodyVisible && g_activePanelTab == PanelTab_Health;
     const bool teleportVisible = bodyVisible && g_activePanelTab == PanelTab_Teleport;
     const bool inventoryVisible = bodyVisible && g_activePanelTab == PanelTab_Inventory;
+    const bool spawnVisible = bodyVisible && g_activePanelTab == PanelTab_Spawn;
 
     UpdatePanelTabButtonCaptions();
 
@@ -4502,6 +4941,7 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_healthTabButton, bodyVisible);
     SetWidgetVisible(g_teleportTabButton, bodyVisible);
     SetWidgetVisible(g_inventoryTabButton, bodyVisible);
+    SetWidgetVisible(g_spawnTabButton, bodyVisible);
 
     SetWidgetVisible(g_statesSectionText, healthVisible);
     SetWidgetVisible(g_fullRestoreButton, healthVisible);
@@ -4536,6 +4976,19 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_itemQuantityLabelText, inventoryVisible);
     SetWidgetVisible(g_itemQuantityEdit, inventoryVisible);
     SetWidgetVisible(g_spawnItemButton, inventoryVisible);
+
+    SetWidgetVisible(g_spawnSectionText, spawnVisible);
+    SetWidgetVisible(g_spawnCategoryLabelText, spawnVisible);
+    SetWidgetVisible(g_spawnCategoryDropdown, spawnVisible);
+    SetWidgetVisible(g_spawnSearchLabelText, spawnVisible);
+    SetWidgetVisible(g_spawnSearchEdit, spawnVisible);
+    SetWidgetVisible(g_spawnResultCountText, spawnVisible);
+    SetWidgetVisible(g_spawnResultsList, spawnVisible);
+    SetWidgetVisible(g_spawnSelectedSummaryText, spawnVisible);
+    SetWidgetVisible(g_spawnQuantityLabelText, spawnVisible);
+    SetWidgetVisible(g_spawnQuantityEdit, spawnVisible);
+    SetWidgetVisible(g_spawnPreviewText, spawnVisible);
+    SetWidgetVisible(g_spawnCharactersButton, spawnVisible);
 
     SetWidgetVisible(g_statusText, bodyVisible);
 }
@@ -4743,6 +5196,10 @@ int GetActivePanelContentBottomInBodyCoords()
         return GetSavedLocationsContentBottomInBodyCoords();
     case PanelTab_Inventory:
         return GetWidgetBottom(g_spawnItemButton, 608 - bodyTop);
+    case PanelTab_Spawn:
+        return GetWidgetBottom(
+            g_spawnPreviewText,
+            GetWidgetBottom(g_spawnCharactersButton, 612 - bodyTop));
     case PanelTab_Health:
     default:
         bottom = GetWidgetBottom(g_forceDyingButton, 478 - bodyTop);
@@ -6463,6 +6920,20 @@ std::string SafeFactionName(Character* target)
     return name;
 }
 
+std::string FormatPointerValue(const void* pointer)
+{
+    std::stringstream stream;
+    stream << pointer;
+    return stream.str();
+}
+
+float ComputeHorizontalDistance(const Ogre::Vector3& a, const Ogre::Vector3& b)
+{
+    const float deltaX = a.x - b.x;
+    const float deltaZ = a.z - b.z;
+    return std::sqrt((deltaX * deltaX) + (deltaZ * deltaZ));
+}
+
 bool TryResolveMembershipLabel(Character* target, std::string* outLabel)
 {
     if (!target || !outLabel)
@@ -6691,6 +7162,10 @@ void SetActionButtonsEnabled(bool enabled)
     {
         g_spawnItemButton->setEnabled(enabled);
     }
+    if (g_spawnCharactersButton)
+    {
+        g_spawnCharactersButton->setEnabled(enabled);
+    }
 }
 
 void SetSelectionActionButtonsEnabled(bool enabled)
@@ -6783,6 +7258,474 @@ void RefreshInventorySpawnButtonState()
     g_spawnItemButton->setEnabled(hasTarget && hasSelectedItem);
 }
 
+bool TryGetSpawnAnchorPosition(Character* target, Ogre::Vector3* outPosition)
+{
+    if (!target || !outPosition)
+    {
+        return false;
+    }
+
+    if (TryGetCharacterTeleportReferencePosition(target, true, outPosition, 0))
+    {
+        return true;
+    }
+
+    __try
+    {
+        *outPosition = target->getPosition();
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool TryBuildSpawnPlacementOffset(int placementIndex, Ogre::Vector3* outOffset)
+{
+    if (!outOffset || placementIndex < 0)
+    {
+        return false;
+    }
+
+    int ring = 0;
+    int slot = placementIndex;
+    int slotsInRing = kSpawnTemplateFirstRingSlots;
+    while (slot >= slotsInRing)
+    {
+        slot -= slotsInRing;
+        ++ring;
+        slotsInRing = kSpawnTemplateFirstRingSlots * (ring + 1);
+    }
+
+    const float radius = kSpawnTemplateBaseRadius + (static_cast<float>(ring) * kSpawnTemplateRingSpacing);
+    const float angle = ((2.0f * kPi) * static_cast<float>(slot)) / static_cast<float>(slotsInRing);
+    *outOffset = Ogre::Vector3(std::cos(angle) * radius, 0.0f, std::sin(angle) * radius);
+    return true;
+}
+
+bool TryResolveSpawnPlacementPosition(
+    Character* target,
+    int placementIndex,
+    Ogre::Vector3* requestedPositionOut,
+    Ogre::Vector3* resolvedPositionOut)
+{
+    if (requestedPositionOut)
+    {
+        *requestedPositionOut = Ogre::Vector3(0.0f, 0.0f, 0.0f);
+    }
+    if (resolvedPositionOut)
+    {
+        *resolvedPositionOut = Ogre::Vector3(0.0f, 0.0f, 0.0f);
+    }
+
+    if (!target || !requestedPositionOut || !resolvedPositionOut || !ou)
+    {
+        return false;
+    }
+
+    Ogre::Vector3 anchorPosition(0.0f, 0.0f, 0.0f);
+    Ogre::Vector3 placementOffset(0.0f, 0.0f, 0.0f);
+    if (!TryGetSpawnAnchorPosition(target, &anchorPosition)
+        || !TryBuildSpawnPlacementOffset(placementIndex, &placementOffset))
+    {
+        return false;
+    }
+
+    Ogre::Vector3 requestedPosition = anchorPosition + placementOffset;
+    ou->fixNaNPosition(requestedPosition);
+    Ogre::Vector3 resolvedPosition = requestedPosition;
+    Ogre::Vector3 validatedPosition = requestedPosition;
+    if (!ou->findValidSpawnPos(validatedPosition, requestedPosition))
+    {
+        return false;
+    }
+
+    if (ComputeHorizontalDistance(validatedPosition, requestedPosition) <= kSpawnTemplateMaxResolvedDrift)
+    {
+        resolvedPosition = validatedPosition;
+    }
+
+    *requestedPositionOut = requestedPosition;
+    *resolvedPositionOut = resolvedPosition;
+    return true;
+}
+
+bool TryResolveTargetSpawnFaction(Character* target, Faction** outFaction)
+{
+    if (!outFaction)
+    {
+        return false;
+    }
+
+    *outFaction = 0;
+    if (!target)
+    {
+        return false;
+    }
+
+    if (target->owner)
+    {
+        *outFaction = target->owner;
+        return true;
+    }
+
+    __try
+    {
+        *outFaction = target->getFaction();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        *outFaction = 0;
+    }
+
+    return *outFaction != 0;
+}
+
+ActivePlatoon* TryGetCharacterActivePlatoon(Character* character)
+{
+    if (!character)
+    {
+        return 0;
+    }
+
+    __try
+    {
+        return character->getPlatoon();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
+Character* TryCreateSpawnedCharacter(
+    GameData* templateData,
+    Faction* faction,
+    RootObjectContainer* ownerContainer,
+    const Ogre::Vector3& resolvedPosition)
+{
+    if (!templateData || !ou || !ou->theFactory)
+    {
+        return 0;
+    }
+
+    RootObject* createdRoot = 0;
+    __try
+    {
+        createdRoot = ou->theFactory->createRandomCharacter(
+            faction,
+            resolvedPosition,
+            ownerContainer,
+            templateData,
+            0,
+            0.0f);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+
+    if (!createdRoot)
+    {
+        return 0;
+    }
+
+    __try
+    {
+        return createdRoot->getHandle().getCharacter();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
+ActivePlatoon* TryPrepareSpawnGroupContainer(Character* spawnedCharacter, ActivePlatoon* targetPlatoon)
+{
+    if (!spawnedCharacter)
+    {
+        return 0;
+    }
+
+    ActivePlatoon* spawnedPlatoon = TryGetCharacterActivePlatoon(spawnedCharacter);
+    if (spawnedPlatoon && spawnedPlatoon != targetPlatoon)
+    {
+        return spawnedPlatoon;
+    }
+
+    __try
+    {
+        Platoon* separated = spawnedCharacter->separateIntoMyOwnSquad(false);
+        if (separated)
+        {
+            return separated->getActivePlatoon();
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+
+    return TryGetCharacterActivePlatoon(spawnedCharacter);
+}
+
+void TryAssignSpawnedCharacterFaction(Character* spawnedCharacter, Faction* faction, ActivePlatoon* spawnGroupContainer)
+{
+    if (!spawnedCharacter || !faction || !spawnGroupContainer)
+    {
+        return;
+    }
+
+    __try
+    {
+        spawnedCharacter->setFaction(faction, spawnGroupContainer);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
+void TryFinalizeSpawnedCharacterPosition(Character* spawnedCharacter)
+{
+    if (!spawnedCharacter)
+    {
+        return;
+    }
+
+    __try
+    {
+        spawnedCharacter->setRagdollNavmeshSafePos();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
+bool TrySpawnTemplateNearTarget(
+    GameData* templateData,
+    const std::string& templateName,
+    Character* target,
+    int quantity,
+    SpawnTemplateApplyResult* outResult)
+{
+    if (!outResult)
+    {
+        return false;
+    }
+
+    *outResult = SpawnTemplateApplyResult();
+    outResult->requestedCount = quantity;
+
+    if (!templateData || !target || quantity <= 0 || !ou || !ou->theFactory)
+    {
+        outResult->message = "spawn prerequisites unavailable";
+        return false;
+    }
+
+    Faction* targetFaction = 0;
+    if (!TryResolveTargetSpawnFaction(target, &targetFaction) || !targetFaction)
+    {
+        outResult->message = "target faction unavailable";
+        return false;
+    }
+
+    ActivePlatoon* targetPlatoon = TryGetCharacterActivePlatoon(target);
+    ActivePlatoon* spawnGroupContainer = 0;
+
+    for (int spawnIndex = 0; spawnIndex < quantity; ++spawnIndex)
+    {
+        bool placementFound = false;
+        Ogre::Vector3 requestedPosition(0.0f, 0.0f, 0.0f);
+        Ogre::Vector3 resolvedPosition(0.0f, 0.0f, 0.0f);
+        for (int attempt = 0; attempt < kSpawnTemplateMaxPlacementAttemptsPerUnit; ++attempt)
+        {
+            if (TryResolveSpawnPlacementPosition(
+                    target,
+                    spawnIndex + attempt,
+                    &requestedPosition,
+                    &resolvedPosition))
+            {
+                placementFound = true;
+                break;
+            }
+        }
+
+        if (!placementFound)
+        {
+            continue;
+        }
+
+        ++outResult->validSpawnCount;
+
+        ActivePlatoon* spawnGroupContainerBeforePrepare = spawnGroupContainer;
+        RootObjectContainer* createOwnerContainer = spawnGroupContainer;
+        Character* spawnedCharacter = TryCreateSpawnedCharacter(
+            templateData,
+            targetFaction,
+            createOwnerContainer,
+            resolvedPosition);
+        bool usedTargetPlatoonFallback = false;
+        if (!spawnedCharacter && targetPlatoon)
+        {
+            createOwnerContainer = targetPlatoon;
+            spawnedCharacter = TryCreateSpawnedCharacter(
+                templateData,
+                targetFaction,
+                createOwnerContainer,
+                resolvedPosition);
+            usedTargetPlatoonFallback = spawnedCharacter != 0;
+        }
+
+        if (!spawnedCharacter)
+        {
+            ++outResult->creationFailureCount;
+            continue;
+        }
+
+        ActivePlatoon* spawnedPlatoonBeforePrepare = TryGetCharacterActivePlatoon(spawnedCharacter);
+        if (!spawnGroupContainer)
+        {
+            spawnGroupContainer = TryPrepareSpawnGroupContainer(spawnedCharacter, targetPlatoon);
+        }
+
+        TryAssignSpawnedCharacterFaction(spawnedCharacter, targetFaction, spawnGroupContainer);
+        TryFinalizeSpawnedCharacterPosition(spawnedCharacter);
+        ActivePlatoon* spawnedPlatoonAfterAssign = TryGetCharacterActivePlatoon(spawnedCharacter);
+
+        if (usedTargetPlatoonFallback)
+        {
+            outResult->usedTargetPlatoonFallback = true;
+        }
+
+        if (g_developerMode)
+        {
+            std::stringstream line;
+            line << "[investigate][spawn] template_name=\"" << SanitizeLogValue(templateName) << "\""
+                 << " target_name=\"" << SanitizeLogValue(SafeCharacterName(target)) << "\""
+                 << " requested_x=" << requestedPosition.x
+                 << " requested_y=" << requestedPosition.y
+                 << " requested_z=" << requestedPosition.z
+                 << " resolved_x=" << resolvedPosition.x
+                 << " resolved_y=" << resolvedPosition.y
+                 << " resolved_z=" << resolvedPosition.z
+                 << " used_target_platoon_fallback=" << (usedTargetPlatoonFallback ? "true" : "false")
+                 << " target_platoon_ptr=" << FormatPointerValue(targetPlatoon)
+                 << " create_owner_container_ptr=" << FormatPointerValue(createOwnerContainer)
+                 << " spawn_group_container_before_ptr=" << FormatPointerValue(spawnGroupContainerBeforePrepare)
+                 << " spawn_group_container_after_ptr=" << FormatPointerValue(spawnGroupContainer)
+                 << " spawned_platoon_before_ptr=" << FormatPointerValue(spawnedPlatoonBeforePrepare)
+                 << " spawned_platoon_after_ptr=" << FormatPointerValue(spawnedPlatoonAfterAssign)
+                 << " created_in_target_platoon="
+                 << ((spawnedPlatoonBeforePrepare && spawnedPlatoonBeforePrepare == targetPlatoon) ? "true" : "false")
+                 << " final_in_target_platoon="
+                 << ((spawnedPlatoonAfterAssign && spawnedPlatoonAfterAssign == targetPlatoon) ? "true" : "false")
+                 << " final_in_spawn_group="
+                 << ((spawnedPlatoonAfterAssign && spawnedPlatoonAfterAssign == spawnGroupContainer) ? "true" : "false");
+            LogInfoLine(line.str());
+        }
+
+        ++outResult->spawnedCount;
+    }
+
+    outResult->success = outResult->spawnedCount > 0;
+    if (outResult->spawnedCount <= 0)
+    {
+        if (outResult->validSpawnCount <= 0)
+        {
+            outResult->message = "no valid spawn positions found";
+        }
+        else
+        {
+            outResult->message = "character creation failed";
+        }
+        return true;
+    }
+
+    if (outResult->spawnedCount == quantity)
+    {
+        outResult->message = "spawned all requested characters";
+    }
+    else
+    {
+        std::stringstream message;
+        message << "spawned " << outResult->spawnedCount << " of " << quantity << " requested characters";
+        outResult->message = message.str();
+    }
+
+    return true;
+}
+
+void RefreshSpawnPreviewText()
+{
+    if (!g_spawnPreviewText || !g_spawnSelectedSummaryText)
+    {
+        return;
+    }
+
+    std::string displayName;
+    std::string summaryLabel;
+    const bool hasSelectedTemplate = TryResolveSelectedSpawnTemplate(0, &displayName, &summaryLabel);
+    if (hasSelectedTemplate)
+    {
+        g_spawnSelectedSummaryText->setCaption("Selected: " + summaryLabel);
+    }
+    else
+    {
+        g_spawnSelectedSummaryText->setCaption("Selected: None");
+    }
+
+    const bool hasTarget =
+        g_hasLastTargetSnapshot
+        && g_lastTargetSnapshot.hasTarget
+        && g_lastTargetSnapshot.target != 0;
+    int quantity = 0;
+    const bool hasValidQuantity = TryGetSpawnTemplateQuantity(&quantity);
+
+    if (!hasSelectedTemplate)
+    {
+        g_spawnPreviewText->setCaption("Preview: Select a spawn template");
+        return;
+    }
+
+    if (!hasValidQuantity)
+    {
+        std::stringstream preview;
+        preview << "Preview: Enter a quantity from 1 to " << kSpawnTemplateQuantityMax;
+        g_spawnPreviewText->setCaption(preview.str());
+        return;
+    }
+
+    if (!hasTarget)
+    {
+        g_spawnPreviewText->setCaption("Preview: Select a target to place " + displayName);
+        return;
+    }
+
+    std::stringstream preview;
+    preview << "Preview: Spawn " << quantity << "x " << displayName
+            << " near " << g_lastTargetSnapshot.name
+            << ", same faction, grouped";
+    g_spawnPreviewText->setCaption(preview.str());
+}
+
+void RefreshSpawnButtonState()
+{
+    if (!g_spawnCharactersButton)
+    {
+        return;
+    }
+
+    const bool hasTarget =
+        g_hasLastTargetSnapshot
+        && g_lastTargetSnapshot.hasTarget
+        && g_lastTargetSnapshot.target != 0;
+    GameData* templateData = 0;
+    int quantity = 0;
+    const bool hasSelectedTemplate = TryResolveSelectedSpawnTemplate(&templateData, 0, 0) && templateData != 0;
+    const bool hasValidQuantity = TryGetSpawnTemplateQuantity(&quantity);
+    g_spawnCharactersButton->setEnabled(hasTarget && hasSelectedTemplate && hasValidQuantity);
+}
+
 void UpdateSelectionActionButtons(PlayerInterface* player)
 {
     const bool hasSelectedCharacters = GetSelectedCharacterCount(player) > 0;
@@ -6795,6 +7738,8 @@ void UpdateSelectionActionButtons(PlayerInterface* player)
 
     RefreshSavedLocationActionButtons(player);
     RefreshInventorySpawnButtonState();
+    RefreshSpawnButtonState();
+    RefreshSpawnPreviewText();
 }
 
 void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)
@@ -6814,6 +7759,7 @@ void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)
         g_targetStateText->setCaption("State: Unknown");
         g_noTargetText->setCaption("Source: None");
         SetActionButtonsEnabled(false);
+        RefreshSpawnPreviewText();
         return;
     }
 
@@ -6824,6 +7770,7 @@ void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)
     g_targetStateText->setCaption("State: " + snapshot.stateLabel);
     g_noTargetText->setCaption(std::string("Source: ") + TargetSourceToUiLabel(snapshot.source));
     SetActionButtonsEnabled(true);
+    RefreshSpawnPreviewText();
 }
 
 void LogTargetSnapshotIfChanged(const TargetSnapshot& snapshot)
@@ -8414,6 +9361,30 @@ void OnInventorySearchResultsSelectionChanged(MyGUI::ListBox*, size_t)
     RefreshInventorySpawnButtonState();
 }
 
+void OnSpawnSearchTextChanged(MyGUI::EditBox*)
+{
+    EnsureSpawnTemplateOptionsLoaded();
+    RefreshSpawnTemplateList();
+}
+
+void OnSpawnCategoryChanged(MyGUI::ComboBox*, size_t)
+{
+    EnsureSpawnTemplateOptionsLoaded();
+    RefreshSpawnTemplateList();
+}
+
+void OnSpawnQuantityTextChanged(MyGUI::EditBox*)
+{
+    RefreshSpawnButtonState();
+    RefreshSpawnPreviewText();
+}
+
+void OnSpawnResultsSelectionChanged(MyGUI::ListBox*, size_t)
+{
+    RefreshSpawnButtonState();
+    RefreshSpawnPreviewText();
+}
+
 void OnSpawnItemButtonClicked(MyGUI::Widget*)
 {
     const char* actionId = "spawn_inventory_item";
@@ -8537,6 +9508,110 @@ void OnSpawnItemButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
 
     MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
     OnSpawnItemButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
+{
+    const char* actionId = "spawn_templates";
+    LogActionRequested(actionId);
+
+    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
+    {
+        LogInfoLine("event=testkit_action_result action=\"spawn_templates\" success=false reason=\"no_target\"");
+        SetStatusMessage("No target - select a character");
+        return;
+    }
+
+    GameData* templateData = 0;
+    std::string displayName;
+    if (!TryResolveSelectedSpawnTemplate(&templateData, &displayName, 0) || !templateData)
+    {
+        LogInfoLine("event=testkit_action_result action=\"spawn_templates\" success=false reason=\"no_template_selected\"");
+        SetStatusMessage("Spawn failed - select a spawn template");
+        return;
+    }
+
+    int quantity = 0;
+    if (!TryGetSpawnTemplateQuantity(&quantity))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"spawn_templates\" success=false reason=\"invalid_quantity\""
+               << " template_name=\"" << SanitizeLogValue(displayName) << "\"";
+        LogInfoLine(result.str());
+        std::stringstream status;
+        status << "Spawn failed - enter a quantity from 1 to " << kSpawnTemplateQuantityMax;
+        SetStatusMessage(status.str());
+        return;
+    }
+
+    SpawnTemplateApplyResult applyResult;
+    if (!TrySpawnTemplateNearTarget(
+            templateData,
+            displayName,
+            g_lastTargetSnapshot.target,
+            quantity,
+            &applyResult))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"spawn_templates\" success=false reason=\"apply_failed\""
+               << " template_name=\"" << SanitizeLogValue(displayName) << "\""
+               << " quantity=" << quantity
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Spawn failed - apply path unavailable");
+        return;
+    }
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"spawn_templates\" success="
+           << (applyResult.success ? "true" : "false")
+           << " template_name=\"" << SanitizeLogValue(displayName) << "\""
+           << " quantity=" << quantity
+           << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\""
+           << " spawned_count=" << applyResult.spawnedCount
+           << " valid_spawn_count=" << applyResult.validSpawnCount
+           << " creation_failure_count=" << applyResult.creationFailureCount
+           << " used_target_platoon_fallback=" << (applyResult.usedTargetPlatoonFallback ? "true" : "false");
+    if (!applyResult.success)
+    {
+        result << " reason=\"" << SanitizeLogValue(applyResult.message) << "\"";
+    }
+    LogInfoLine(result.str());
+
+    if (applyResult.spawnedCount <= 0)
+    {
+        SetStatusMessage("Spawn failed - " + applyResult.message);
+        return;
+    }
+
+    std::stringstream status;
+    if (applyResult.spawnedCount == quantity)
+    {
+        status << "Spawned " << applyResult.spawnedCount << "x " << displayName
+               << " near " << g_lastTargetSnapshot.name;
+    }
+    else
+    {
+        status << "Spawned " << applyResult.spawnedCount << " of " << quantity << "x " << displayName
+               << " near " << g_lastTargetSnapshot.name;
+    }
+    SetStatusMessage(status.str());
+}
+
+void OnSpawnCharactersButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnSpawnCharactersButtonClicked(0);
 
     if (inputManager)
     {
@@ -9447,6 +10522,24 @@ void OnInventoryTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id
     }
 }
 
+void OnSpawnTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    EnsureSpawnTemplateOptionsLoaded();
+    RefreshSpawnTemplateList();
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    SetActivePanelTab(PanelTab_Spawn);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnForceDyingButtonClicked(MyGUI::Widget*)
 {
     if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
@@ -9707,6 +10800,7 @@ void ApplySectionHeaderFonts()
         g_savedLocationsSectionText,
         g_inventorySectionText,
         g_spawnFoodSectionText,
+        g_spawnSectionText,
         g_dangerousSectionText
     };
 
@@ -9819,6 +10913,7 @@ bool HasAllPanelWidgets()
         && g_healthTabButton
         && g_teleportTabButton
         && g_inventoryTabButton
+        && g_spawnTabButton
         && g_statesSectionText
         && g_fullRestoreButton
         && g_forceUnconsciousButton
@@ -9856,6 +10951,18 @@ bool HasAllPanelWidgets()
         && g_itemQuantityLabelText
         && g_itemQuantityEdit
         && g_spawnItemButton
+        && g_spawnSectionText
+        && g_spawnCategoryLabelText
+        && g_spawnCategoryDropdown
+        && g_spawnSearchLabelText
+        && g_spawnSearchEdit
+        && g_spawnResultCountText
+        && g_spawnResultsList
+        && g_spawnSelectedSummaryText
+        && g_spawnQuantityLabelText
+        && g_spawnQuantityEdit
+        && g_spawnPreviewText
+        && g_spawnCharactersButton
         && g_dangerousSectionText
         && g_forceDyingButton
         && g_statusText;
@@ -9905,6 +11012,13 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_itemCategoryLabelText);
     ConfigureTextWidget(g_itemSearchLabelText);
     ConfigureTextWidget(g_itemQuantityLabelText);
+    ConfigureTextWidget(g_spawnSectionText);
+    ConfigureTextWidget(g_spawnCategoryLabelText);
+    ConfigureTextWidget(g_spawnSearchLabelText);
+    ConfigureTextWidget(g_spawnResultCountText);
+    ConfigureTextWidget(g_spawnSelectedSummaryText);
+    ConfigureTextWidget(g_spawnQuantityLabelText);
+    ConfigureTextWidget(g_spawnPreviewText);
     ConfigureTextWidget(g_dangerousSectionText);
     ConfigureTextWidget(g_statusText);
     ApplySectionHeaderFonts();
@@ -9913,9 +11027,13 @@ void InitializePanelWidgets()
     ConfigureEditBoxWidget(g_moneyAmountEdit);
     ConfigureEditBoxWidget(g_itemSearchEdit);
     ConfigureEditBoxWidget(g_itemQuantityEdit);
+    ConfigureEditBoxWidget(g_spawnSearchEdit);
+    ConfigureEditBoxWidget(g_spawnQuantityEdit);
     ConfigureComboBoxWidget(g_itemCategoryDropdown);
+    ConfigureComboBoxWidget(g_spawnCategoryDropdown);
     ConfigureListBoxWidget(g_savedLocationsListBox);
     ConfigureListBoxWidget(g_itemSearchResultsList);
+    ConfigureListBoxWidget(g_spawnResultsList);
 
     g_savedLocationsRowsRoot->setNeedMouseFocus(false);
     g_savedLocationsRowsRoot->setInheritsPick(true);
@@ -9941,6 +11059,17 @@ void InitializePanelWidgets()
     g_itemCategoryLabelText->setCaption("Category");
     g_itemSearchLabelText->setCaption("Search");
     g_itemQuantityLabelText->setCaption("Quantity");
+    g_spawnSectionText->setCaption("Spawn");
+    g_spawnCategoryLabelText->setCaption("Category");
+    g_spawnSearchLabelText->setCaption("Search");
+    g_spawnResultCountText->setCaption("0 results");
+    g_spawnSelectedSummaryText->setCaption("Selected: None");
+    {
+        std::stringstream caption;
+        caption << "Quantity (1-" << kSpawnTemplateQuantityMax << ")";
+        g_spawnQuantityLabelText->setCaption(caption.str());
+    }
+    g_spawnPreviewText->setCaption("Preview: Select a spawn template");
     g_dangerousSectionText->setCaption("Dangerous");
 
     g_fullRestoreButton->setCaption("Full Restore");
@@ -9984,8 +11113,24 @@ void InitializePanelWidgets()
     g_itemQuantityEdit->setMaxTextLength(10);
     g_itemQuantityEdit->setOnlyText("1");
     g_spawnItemButton->setCaption("Spawn Item");
+    g_spawnCategoryDropdown->removeAllItems();
+    g_spawnCategoryDropdown->addItem("All");
+    g_spawnCategoryDropdown->addItem("Characters");
+    g_spawnCategoryDropdown->addItem("Creatures");
+    g_spawnCategoryDropdown->setIndexSelected(0);
+    g_spawnSearchEdit->setEditStatic(false);
+    g_spawnSearchEdit->setMaxTextLength(48);
+    g_spawnSearchEdit->setOnlyText("");
+    g_spawnResultsList->removeAllItems();
+    g_spawnResultsList->clearIndexSelected();
+    g_spawnQuantityEdit->setEditStatic(false);
+    g_spawnQuantityEdit->setMaxTextLength(2);
+    g_spawnQuantityEdit->setOnlyText("1");
+    g_spawnCharactersButton->setCaption("Spawn");
     EnsureInventoryFoodItemOptionsLoaded();
     RefreshInventoryFoodItemDropdown();
+    EnsureSpawnTemplateOptionsLoaded();
+    RefreshSpawnTemplateList();
     UpdateForceDyingButtonCaption();
     UpdateCollapseButtonCaption();
     RefreshStatusWidget();
@@ -9997,6 +11142,7 @@ void InitializePanelWidgets()
     g_healthTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnHealthTabButtonPressed);
     g_teleportTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportTabButtonPressed);
     g_inventoryTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventoryTabButtonPressed);
+    g_spawnTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnTabButtonPressed);
     g_fullRestoreButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnFullRestoreButtonPressed);
     g_forceUnconsciousButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceUnconsciousButtonPressed);
     g_forcePlayingDeadButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForcePlayingDeadButtonPressed);
@@ -10023,6 +11169,11 @@ void InitializePanelWidgets()
     g_itemSearchEdit->eventKeyButtonReleased += MyGUI::newDelegate(&OnInventoryItemSearchKeyReleased);
     g_itemSearchResultsList->eventListChangePosition += MyGUI::newDelegate(&OnInventorySearchResultsSelectionChanged);
     g_spawnItemButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnItemButtonPressed);
+    g_spawnCategoryDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnSpawnCategoryChanged);
+    g_spawnSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnSpawnSearchTextChanged);
+    g_spawnResultsList->eventListChangePosition += MyGUI::newDelegate(&OnSpawnResultsSelectionChanged);
+    g_spawnQuantityEdit->eventEditTextChange += MyGUI::newDelegate(&OnSpawnQuantityTextChanged);
+    g_spawnCharactersButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnCharactersButtonPressed);
     g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
     g_headerFrame->eventMouseDrag += MyGUI::newDelegate(&OnHeaderMouseDrag);
@@ -10155,15 +11306,19 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_healthTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 170, 106, 28),
+        BuildBodyCoord(20, 170, 80, 28),
         MyGUI::Align::Default);
     g_teleportTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(127, 170, 106, 28),
+        BuildBodyCoord(100, 170, 80, 28),
         MyGUI::Align::Default);
     g_inventoryTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(234, 170, 106, 28),
+        BuildBodyCoord(180, 170, 80, 28),
+        MyGUI::Align::Default);
+    g_spawnTabButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(260, 170, 80, 28),
         MyGUI::Align::Default);
     g_statesSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
@@ -10312,6 +11467,54 @@ void CreatePanelWidgets()
     g_spawnItemButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
         BuildBodyCoord(184, 580, 156, 28),
+        MyGUI::Align::Default);
+    g_spawnSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_spawnCategoryLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 230, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_spawnCategoryDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
+        "Kenshi_ComboBox",
+        BuildBodyCoord(20, 252, kPanelWidth - 40, 30),
+        MyGUI::Align::Default);
+    g_spawnSearchLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 288, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_spawnSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        BuildBodyCoord(20, 310, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_spawnResultCountText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 344, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_spawnResultsList = bodyParent->createWidget<MyGUI::ListBox>(
+        "Kenshi_ListBox",
+        BuildBodyCoord(20, 366, kPanelWidth - 40, 142),
+        MyGUI::Align::Default);
+    g_spawnSelectedSummaryText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 514, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_spawnQuantityLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 538, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_spawnQuantityEdit = bodyParent->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        BuildBodyCoord(20, 560, 156, 28),
+        MyGUI::Align::Default);
+    g_spawnCharactersButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(184, 560, 156, 28),
+        MyGUI::Align::Default);
+    g_spawnPreviewText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 594, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_dangerousSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
