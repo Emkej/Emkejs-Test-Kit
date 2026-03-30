@@ -526,8 +526,6 @@ MyGUI::ComboBox* g_itemCategoryDropdown = 0;
 MyGUI::TextBox* g_itemSearchLabelText = 0;
 MyGUI::EditBox* g_itemSearchEdit = 0;
 MyGUI::ListBox* g_itemSearchResultsList = 0;
-MyGUI::TextBox* g_itemDropdownLabelText = 0;
-MyGUI::ComboBox* g_itemDropdown = 0;
 MyGUI::TextBox* g_itemQuantityLabelText = 0;
 MyGUI::EditBox* g_itemQuantityEdit = 0;
 MyGUI::Button* g_spawnItemButton = 0;
@@ -560,8 +558,10 @@ int GetSelectedCharacterCount(PlayerInterface* player);
 void ConfigureTextWidget(MyGUI::TextBox* widget);
 void SetActivePanelTab(PanelTab tab);
 void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*);
+bool TryResolveSelectedInventoryFoodItem(GameData** itemDataOut, std::string* itemLabelOut);
 bool TryGetSelectedSavedLocation(size_t* indexOut, SavedLocation* locationOut);
 void RefreshSavedLocationActionButtons(PlayerInterface* player);
+void RefreshInventorySpawnButtonState();
 void OnSavedLocationsCollapseButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSaveLocationNameAccepted(MyGUI::EditBox*);
 void OnSavedLocationSearchTextChanged(MyGUI::EditBox*);
@@ -570,6 +570,7 @@ void OnSavedLocationTeleportButtonPressed(MyGUI::Widget*, int, int, MyGUI::Mouse
 void OnSavedLocationPinButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSavedLocationRenameButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSavedLocationDeleteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnInventorySearchResultsSelectionChanged(MyGUI::ListBox*, size_t);
 std::string SafeCharacterName(Character* target);
 bool TryGetCharacterPositionSnapshot(Character* character, CharacterPositionSnapshot* outSnapshot);
 
@@ -1061,45 +1062,6 @@ bool DoesInventorySpawnOptionMatchSearch(const InventorySpawnOption& option, con
 
 void EnsureInventoryFoodItemOptionsLoaded();
 void RefreshInventoryFoodItemDropdown();
-
-bool TryPopulateInventoryFoodSelection(size_t optionIndex)
-{
-    if (optionIndex == MyGUI::ITEM_NONE || optionIndex >= g_inventoryFoodItemOptions.size())
-    {
-        return false;
-    }
-
-    EnsureInventoryFoodItemOptionsLoaded();
-
-    if (g_itemSearchEdit)
-    {
-        g_itemSearchEdit->setOnlyText(g_inventoryFoodItemOptions[optionIndex].displayName);
-    }
-
-    RefreshInventoryFoodItemDropdown();
-    if (!g_itemDropdown)
-    {
-        return false;
-    }
-
-    for (size_t filteredIndex = 0; filteredIndex < g_filteredInventoryFoodItemOptionIndexes.size(); ++filteredIndex)
-    {
-        if (g_filteredInventoryFoodItemOptionIndexes[filteredIndex] != optionIndex)
-        {
-            continue;
-        }
-
-        g_itemDropdown->setIndexSelected(filteredIndex);
-        if (g_itemSearchResultsList)
-        {
-            g_itemSearchResultsList->setIndexSelected(filteredIndex);
-            g_itemSearchResultsList->beginToItemSelected();
-        }
-        return true;
-    }
-
-    return false;
-}
 
 void ResetPendingInventorySearchShortcut()
 {
@@ -3135,17 +3097,20 @@ void SetWidgetVisible(MyGUI::Widget* widget, bool visible)
 
 void RefreshInventoryFoodItemDropdown()
 {
-    if (!g_itemDropdown)
+    if (!g_itemSearchResultsList)
     {
         g_filteredInventoryFoodItemOptionIndexes.clear();
         return;
     }
 
-    g_itemDropdown->removeAllItems();
-    if (g_itemSearchResultsList)
+    size_t previouslySelectedOptionIndex = MyGUI::ITEM_NONE;
+    const size_t previousSelectedIndex = g_itemSearchResultsList->getIndexSelected();
+    if (previousSelectedIndex < g_filteredInventoryFoodItemOptionIndexes.size())
     {
-        g_itemSearchResultsList->removeAllItems();
+        previouslySelectedOptionIndex = g_filteredInventoryFoodItemOptionIndexes[previousSelectedIndex];
     }
+
+    g_itemSearchResultsList->removeAllItems();
     g_filteredInventoryFoodItemOptionIndexes.clear();
 
     std::string searchUpper;
@@ -3168,65 +3133,60 @@ void RefreshInventoryFoodItemDropdown()
         }
 
         g_filteredInventoryFoodItemOptionIndexes.push_back(index);
-        g_itemDropdown->addItem(option.displayName);
-        if (g_itemSearchResultsList)
-        {
-            g_itemSearchResultsList->addItem(option.displayName);
-        }
+        g_itemSearchResultsList->addItem(option.displayName);
     }
 
     if (g_filteredInventoryFoodItemOptionIndexes.empty())
     {
         if (!g_inventoryFoodItemOptionsLoaded)
         {
-            g_itemDropdown->addItem("Loading items...");
-            if (g_itemSearchResultsList)
-            {
-                g_itemSearchResultsList->addItem("Loading items...");
-            }
+            g_itemSearchResultsList->addItem("Loading items...");
         }
         else if (g_inventoryFoodItemOptions.empty())
         {
-            g_itemDropdown->addItem("No spawnable items available");
-            if (g_itemSearchResultsList)
-            {
-                g_itemSearchResultsList->addItem("No spawnable items available");
-            }
+            g_itemSearchResultsList->addItem("No spawnable items available");
         }
         else
         {
-            g_itemDropdown->addItem("No matching items");
-            if (g_itemSearchResultsList)
+            g_itemSearchResultsList->addItem("No matching items");
+        }
+
+        g_itemSearchResultsList->clearIndexSelected();
+        g_itemSearchResultsList->beginToItemFirst();
+        RefreshInventorySpawnButtonState();
+        return;
+    }
+
+    size_t nextSelectedIndex = MyGUI::ITEM_NONE;
+    if (previouslySelectedOptionIndex != MyGUI::ITEM_NONE)
+    {
+        for (size_t filteredIndex = 0; filteredIndex < g_filteredInventoryFoodItemOptionIndexes.size(); ++filteredIndex)
+        {
+            if (g_filteredInventoryFoodItemOptionIndexes[filteredIndex] == previouslySelectedOptionIndex)
             {
-                g_itemSearchResultsList->addItem("No matching items");
+                nextSelectedIndex = filteredIndex;
+                break;
             }
         }
-
-        g_itemDropdown->setIndexSelected(0);
-        if (g_itemSearchResultsList)
-        {
-            g_itemSearchResultsList->clearIndexSelected();
-        }
-        return;
     }
 
-    if (g_filteredInventoryFoodItemOptionIndexes.size() == 1)
+    if (nextSelectedIndex == MyGUI::ITEM_NONE && g_filteredInventoryFoodItemOptionIndexes.size() == 1u)
     {
-        g_itemDropdown->setIndexSelected(0);
-        if (g_itemSearchResultsList)
-        {
-            g_itemSearchResultsList->setIndexSelected(0);
-            g_itemSearchResultsList->beginToItemSelected();
-        }
-        return;
+        nextSelectedIndex = 0u;
     }
 
-    g_itemDropdown->setIndexSelected(MyGUI::ITEM_NONE);
-    if (g_itemSearchResultsList)
+    if (nextSelectedIndex != MyGUI::ITEM_NONE)
+    {
+        g_itemSearchResultsList->setIndexSelected(nextSelectedIndex);
+        g_itemSearchResultsList->beginToItemSelected();
+    }
+    else
     {
         g_itemSearchResultsList->clearIndexSelected();
         g_itemSearchResultsList->beginToItemFirst();
     }
+
+    RefreshInventorySpawnButtonState();
 }
 
 void ResetInventoryFoodItemOptions()
@@ -3342,12 +3302,12 @@ bool TryResolveSelectedInventoryFoodItem(GameData** itemDataOut, std::string* it
         itemLabelOut->clear();
     }
 
-    if (!g_itemDropdown || g_filteredInventoryFoodItemOptionIndexes.empty())
+    if (!g_itemSearchResultsList || g_filteredInventoryFoodItemOptionIndexes.empty())
     {
         return false;
     }
 
-    const size_t selectedIndex = g_itemDropdown->getIndexSelected();
+    const size_t selectedIndex = g_itemSearchResultsList->getIndexSelected();
     if (selectedIndex >= g_filteredInventoryFoodItemOptionIndexes.size())
     {
         return false;
@@ -4573,8 +4533,6 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_itemSearchLabelText, inventoryVisible);
     SetWidgetVisible(g_itemSearchEdit, inventoryVisible);
     SetWidgetVisible(g_itemSearchResultsList, inventoryVisible);
-    SetWidgetVisible(g_itemDropdownLabelText, inventoryVisible);
-    SetWidgetVisible(g_itemDropdown, inventoryVisible);
     SetWidgetVisible(g_itemQuantityLabelText, inventoryVisible);
     SetWidgetVisible(g_itemQuantityEdit, inventoryVisible);
     SetWidgetVisible(g_spawnItemButton, inventoryVisible);
@@ -5251,8 +5209,6 @@ void ResetPanelWidgetPointers()
     g_itemSearchLabelText = 0;
     g_itemSearchEdit = 0;
     g_itemSearchResultsList = 0;
-    g_itemDropdownLabelText = 0;
-    g_itemDropdown = 0;
     g_itemQuantityLabelText = 0;
     g_itemQuantityEdit = 0;
     g_spawnItemButton = 0;
@@ -6811,6 +6767,22 @@ void RefreshSavedLocationActionButtons(PlayerInterface* player)
     }
 }
 
+void RefreshInventorySpawnButtonState()
+{
+    if (!g_spawnItemButton)
+    {
+        return;
+    }
+
+    const bool hasTarget =
+        g_hasLastTargetSnapshot
+        && g_lastTargetSnapshot.hasTarget
+        && g_lastTargetSnapshot.target != 0;
+    GameData* itemData = 0;
+    const bool hasSelectedItem = TryResolveSelectedInventoryFoodItem(&itemData, 0) && itemData != 0;
+    g_spawnItemButton->setEnabled(hasTarget && hasSelectedItem);
+}
+
 void UpdateSelectionActionButtons(PlayerInterface* player)
 {
     const bool hasSelectedCharacters = GetSelectedCharacterCount(player) > 0;
@@ -6822,6 +6794,7 @@ void UpdateSelectionActionButtons(PlayerInterface* player)
     }
 
     RefreshSavedLocationActionButtons(player);
+    RefreshInventorySpawnButtonState();
 }
 
 void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)
@@ -8436,20 +8409,9 @@ void OnInventoryCategoryChanged(MyGUI::ComboBox*, size_t)
     RefreshInventoryFoodItemDropdown();
 }
 
-void OnInventorySearchResultsActivated(MyGUI::ListBox*, size_t index)
+void OnInventorySearchResultsSelectionChanged(MyGUI::ListBox*, size_t)
 {
-    if (index >= g_filteredInventoryFoodItemOptionIndexes.size())
-    {
-        return;
-    }
-
-    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
-    TryPopulateInventoryFoodSelection(g_filteredInventoryFoodItemOptionIndexes[index]);
-
-    if (inputManager)
-    {
-        inputManager->resetMouseCaptureWidget();
-    }
+    RefreshInventorySpawnButtonState();
 }
 
 void OnSpawnItemButtonClicked(MyGUI::Widget*)
@@ -9891,8 +9853,6 @@ bool HasAllPanelWidgets()
         && g_itemSearchLabelText
         && g_itemSearchEdit
         && g_itemSearchResultsList
-        && g_itemDropdownLabelText
-        && g_itemDropdown
         && g_itemQuantityLabelText
         && g_itemQuantityEdit
         && g_spawnItemButton
@@ -9944,7 +9904,6 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_spawnFoodSectionText);
     ConfigureTextWidget(g_itemCategoryLabelText);
     ConfigureTextWidget(g_itemSearchLabelText);
-    ConfigureTextWidget(g_itemDropdownLabelText);
     ConfigureTextWidget(g_itemQuantityLabelText);
     ConfigureTextWidget(g_dangerousSectionText);
     ConfigureTextWidget(g_statusText);
@@ -9955,7 +9914,6 @@ void InitializePanelWidgets()
     ConfigureEditBoxWidget(g_itemSearchEdit);
     ConfigureEditBoxWidget(g_itemQuantityEdit);
     ConfigureComboBoxWidget(g_itemCategoryDropdown);
-    ConfigureComboBoxWidget(g_itemDropdown);
     ConfigureListBoxWidget(g_savedLocationsListBox);
     ConfigureListBoxWidget(g_itemSearchResultsList);
 
@@ -9982,7 +9940,6 @@ void InitializePanelWidgets()
     g_spawnFoodSectionText->setCaption("Spawn Items");
     g_itemCategoryLabelText->setCaption("Category");
     g_itemSearchLabelText->setCaption("Search");
-    g_itemDropdownLabelText->setCaption("Selected Item");
     g_itemQuantityLabelText->setCaption("Quantity");
     g_dangerousSectionText->setCaption("Dangerous");
 
@@ -10064,7 +10021,7 @@ void InitializePanelWidgets()
     g_itemSearchEdit->eventKeyLostFocus += MyGUI::newDelegate(&OnInventoryItemSearchFocusChanged);
     g_itemSearchEdit->eventKeyButtonPressed += MyGUI::newDelegate(&OnInventoryItemSearchKeyPressed);
     g_itemSearchEdit->eventKeyButtonReleased += MyGUI::newDelegate(&OnInventoryItemSearchKeyReleased);
-    g_itemSearchResultsList->eventListMouseItemActivate += MyGUI::newDelegate(&OnInventorySearchResultsActivated);
+    g_itemSearchResultsList->eventListChangePosition += MyGUI::newDelegate(&OnInventorySearchResultsSelectionChanged);
     g_spawnItemButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnItemButtonPressed);
     g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
@@ -10342,15 +10299,7 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_itemSearchResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        BuildBodyCoord(20, 410, kPanelWidth - 40, 84),
-        MyGUI::Align::Default);
-    g_itemDropdownLabelText = bodyParent->createWidget<MyGUI::TextBox>(
-        "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 500, kPanelWidth - 40, 18),
-        MyGUI::Align::Default);
-    g_itemDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
-        "Kenshi_ComboBox",
-        BuildBodyCoord(20, 522, kPanelWidth - 40, 30),
+        BuildBodyCoord(20, 410, kPanelWidth - 40, 142),
         MyGUI::Align::Default);
     g_itemQuantityLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
