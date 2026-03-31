@@ -4,6 +4,7 @@
 
 #include <core/Functions.h>
 #include <kenshi/Character.h>
+#include <kenshi/CharStats.h>
 #include <kenshi/Damages.h>
 #include <kenshi/Dialogue.h>
 #include <kenshi/Faction.h>
@@ -92,6 +93,8 @@ const float kForceDyingAliveBloodMargin = 1.0f;
 const float kProbablyDyingBloodMax = 50.0f;
 const float kLimbDamageFraction = 0.35f;
 const int kSpawnTemplateQuantityMax = 50;
+const int kStatsSafeValueMin = 0;
+const int kStatsSafeValueMax = 100;
 const float kSpawnTemplateBaseRadius = 180.0f;
 const float kSpawnTemplateRingSpacing = 120.0f;
 const int kSpawnTemplateFirstRingSlots = 6;
@@ -242,9 +245,10 @@ enum TargetSource
 enum PanelTab
 {
     PanelTab_Health = 0,
-    PanelTab_Teleport = 1,
-    PanelTab_Inventory = 2,
-    PanelTab_Spawn = 3
+    PanelTab_Stats = 1,
+    PanelTab_Teleport = 2,
+    PanelTab_Inventory = 3,
+    PanelTab_Spawn = 4
 };
 
 enum InventorySpawnCategory
@@ -277,6 +281,52 @@ struct InventorySpawnOption
     std::string displayName;
     std::string searchTextUpper;
     GameData* itemData;
+};
+
+enum StatsEditOperation
+{
+    StatsEditOperation_Set = 0,
+    StatsEditOperation_Add = 1,
+    StatsEditOperation_Subtract = 2
+};
+
+struct StatsRegistryEntry
+{
+    StatsEnumerated stat;
+    const char* label;
+    const char* groupLabel;
+    bool commonTestStat;
+    int safeMinValue;
+    int safeMaxValue;
+};
+
+const StatsRegistryEntry kStatsRegistry[] = {
+    { STAT_STRENGTH, "Strength", "Core", true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_TOUGHNESS, "Toughness", "Core", true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_DEXTERITY, "Dexterity", "Core", true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_ATHLETICS, "Athletics", "Movement / Utility", true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_MELEE_ATTACK, "Melee Attack", "Combat", true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_MELEE_DEFENCE, "Melee Defense", "Combat", true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_PERCEPTION, "Perception", "Core", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_STEALTH, "Stealth", "Movement / Utility", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_THIEVING, "Thievery", "Movement / Utility", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_ASSASSINATION, "Assassination", "Movement / Utility", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_MARTIALARTS, "Martial Arts", "Combat", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_DODGE, "Dodge", "Combat", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_TURRETS, "Turrets", "Combat", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_FRIENDLY_FIRE, "Precision Shooting", "Combat", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_SABRES, "Sabres", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_KATANAS, "Katanas", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_HACKERS, "Hackers", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_HEAVYWEAPONS, "Heavy Weapons", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_BLUNT, "Blunt", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_POLEARMS, "Polearms", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_CROSSBOWS, "Crossbows", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_LABOURING, "Labouring", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_MEDIC, "Field Medic", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_ROBOTICS, "Robotics", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_SCIENCE, "Science", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_ENGINEERING, "Engineering", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax }
 };
 
 enum SpawnTemplateCategory
@@ -571,6 +621,7 @@ MyGUI::TextBox* g_targetMembershipText = 0;
 MyGUI::TextBox* g_targetStateText = 0;
 MyGUI::TextBox* g_noTargetText = 0;
 MyGUI::Button* g_healthTabButton = 0;
+MyGUI::Button* g_statsTabButton = 0;
 MyGUI::Button* g_teleportTabButton = 0;
 MyGUI::Button* g_inventoryTabButton = 0;
 MyGUI::Button* g_spawnTabButton = 0;
@@ -583,6 +634,21 @@ MyGUI::Button* g_damageLeftArmButton = 0;
 MyGUI::Button* g_damageRightArmButton = 0;
 MyGUI::Button* g_damageLeftLegButton = 0;
 MyGUI::Button* g_damageRightLegButton = 0;
+MyGUI::TextBox* g_statsSectionText = 0;
+MyGUI::TextBox* g_statsScopeText = 0;
+MyGUI::Button* g_statsApplyToAllButton = 0;
+MyGUI::TextBox* g_statsSearchLabelText = 0;
+MyGUI::EditBox* g_statsSearchEdit = 0;
+MyGUI::TextBox* g_statsResultCountText = 0;
+MyGUI::ListBox* g_statsResultsList = 0;
+MyGUI::TextBox* g_statsSelectedSummaryText = 0;
+MyGUI::TextBox* g_statsCurrentValueText = 0;
+MyGUI::TextBox* g_statsInputLabelText = 0;
+MyGUI::EditBox* g_statsInputEdit = 0;
+MyGUI::Button* g_statsSetButton = 0;
+MyGUI::Button* g_statsAddButton = 0;
+MyGUI::Button* g_statsSubtractButton = 0;
+MyGUI::TextBox* g_statsPreviewText = 0;
 MyGUI::TextBox* g_teleportSectionText = 0;
 MyGUI::TextBox* g_saveLocationNameLabelText = 0;
 MyGUI::EditBox* g_saveLocationNameEdit = 0;
@@ -637,6 +703,7 @@ MyGUI::TextBox* g_statusText = 0;
 
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
+std::vector<size_t> g_filteredStatsRegistryIndexes;
 std::vector<SpawnTemplateOption> g_spawnTemplateOptions;
 std::vector<size_t> g_filteredSpawnTemplateOptionIndexes;
 std::vector<SavedLocation> g_savedLocations;
@@ -644,6 +711,8 @@ std::vector<size_t> g_filteredSavedLocationIndexes;
 std::string g_savedLocationRenameId;
 std::string g_savedLocationSearchText;
 std::string g_selectedSavedLocationId;
+StatsEnumerated g_selectedStatsStat = STAT_NONE;
+bool g_statsApplyToAllSelected = false;
 bool g_savedLocationsCollapsed = false;
 bool g_spawnSelectionSyncInProgress = false;
 bool g_inventoryFoodItemOptionsLoaded = false;
@@ -661,9 +730,15 @@ const char* ResolvePanelHeaderTitleFontName(int fontHeight);
 void ApplyPanelHeaderTitleFont();
 void ApplyPanelLayout();
 int GetSelectedCharacterCount(PlayerInterface* player);
+bool HasPrimarySelectedCharacter(PlayerInterface* player);
+Character* TryGetPrimarySelectedCharacter(PlayerInterface* player);
+int ClampIntValue(int value, int minValue, int maxValue);
 void ConfigureTextWidget(MyGUI::TextBox* widget);
 void SetActivePanelTab(PanelTab tab);
+void RefreshStatsUi(PlayerInterface* player);
+void OnStatsTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*);
+bool TryResolveSelectedStatsEntry(const StatsRegistryEntry** entryOut);
 bool TryResolveSelectedInventoryFoodItem(GameData** itemDataOut, std::string* itemLabelOut);
 bool TryResolveSelectedSpawnTemplate(GameData** templateDataOut, std::string* displayNameOut, std::string* summaryLabelOut);
 bool TryGetSelectedSavedLocation(size_t* indexOut, SavedLocation* locationOut);
@@ -683,6 +758,13 @@ void OnSavedLocationTeleportButtonPressed(MyGUI::Widget*, int, int, MyGUI::Mouse
 void OnSavedLocationPinButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSavedLocationRenameButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSavedLocationDeleteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsSearchTextChanged(MyGUI::EditBox*);
+void OnStatsResultsSelectionChanged(MyGUI::ListBox*, size_t);
+void OnStatsInputTextChanged(MyGUI::EditBox*);
+void OnStatsApplyToAllButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsSetButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsAddButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsSubtractButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnInventorySearchResultsSelectionChanged(MyGUI::ListBox*, size_t);
 void OnSpawnResultsSelectionChanged(MyGUI::ListBox*, size_t);
 std::string SafeCharacterName(Character* target);
@@ -790,6 +872,39 @@ bool TryParsePositiveInt(const std::string& value, int* outValue)
     std::stringstream stream(trimmed);
     stream >> parsed;
     if (!stream || !stream.eof() || parsed <= 0 || parsed > std::numeric_limits<int>::max())
+    {
+        return false;
+    }
+
+    *outValue = static_cast<int>(parsed);
+    return true;
+}
+
+bool TryParseNonNegativeInt(const std::string& value, int* outValue)
+{
+    if (!outValue)
+    {
+        return false;
+    }
+
+    const std::string trimmed = TrimAscii(value);
+    if (trimmed.empty())
+    {
+        return false;
+    }
+
+    for (size_t index = 0; index < trimmed.size(); ++index)
+    {
+        if (std::isdigit(static_cast<unsigned char>(trimmed[index])) == 0)
+        {
+            return false;
+        }
+    }
+
+    long long parsed = 0;
+    std::stringstream stream(trimmed);
+    stream >> parsed;
+    if (!stream || !stream.eof() || parsed < 0 || parsed > std::numeric_limits<int>::max())
     {
         return false;
     }
@@ -3666,6 +3781,427 @@ void SetWidgetVisible(MyGUI::Widget* widget, bool visible)
     }
 }
 
+size_t GetStatsRegistryCount()
+{
+    return sizeof(kStatsRegistry) / sizeof(kStatsRegistry[0]);
+}
+
+const StatsRegistryEntry* FindStatsRegistryEntry(StatsEnumerated stat)
+{
+    for (size_t index = 0; index < GetStatsRegistryCount(); ++index)
+    {
+        if (kStatsRegistry[index].stat == stat)
+        {
+            return &kStatsRegistry[index];
+        }
+    }
+
+    return 0;
+}
+
+int ClampStatsValue(const StatsRegistryEntry& entry, int value)
+{
+    return ClampIntValue(value, entry.safeMinValue, entry.safeMaxValue);
+}
+
+int RoundStatValueToInt(float value)
+{
+    if (value >= 0.0f)
+    {
+        return static_cast<int>(value + 0.5f);
+    }
+
+    return static_cast<int>(value - 0.5f);
+}
+
+std::string BuildStatsListLabel(const StatsRegistryEntry& entry)
+{
+    std::stringstream label;
+    label << entry.label;
+    if (entry.commonTestStat)
+    {
+        label << " [Common, " << entry.groupLabel << "]";
+    }
+    else if (entry.groupLabel && entry.groupLabel[0] != '\0')
+    {
+        label << " [" << entry.groupLabel << "]";
+    }
+
+    return label.str();
+}
+
+std::string BuildStatsSummaryLabel(const StatsRegistryEntry& entry)
+{
+    std::stringstream label;
+    label << entry.label;
+    if (entry.commonTestStat)
+    {
+        label << " (Common / " << entry.groupLabel << ")";
+    }
+    else if (entry.groupLabel && entry.groupLabel[0] != '\0')
+    {
+        label << " (" << entry.groupLabel << ")";
+    }
+
+    return label.str();
+}
+
+bool DoesStatsEntryMatchSearch(const StatsRegistryEntry& entry, const std::string& searchUpper)
+{
+    if (searchUpper.empty())
+    {
+        return true;
+    }
+
+    std::stringstream searchable;
+    searchable << entry.label;
+    if (entry.groupLabel && entry.groupLabel[0] != '\0')
+    {
+        searchable << ' ' << entry.groupLabel;
+    }
+    if (entry.commonTestStat)
+    {
+        searchable << " Common";
+    }
+
+    return ToUpperAscii(searchable.str()).find(searchUpper) != std::string::npos;
+}
+
+bool TryResolveSelectedStatsEntry(const StatsRegistryEntry** entryOut)
+{
+    if (entryOut)
+    {
+        *entryOut = 0;
+    }
+
+    StatsEnumerated selectedStat = g_selectedStatsStat;
+    if (g_statsResultsList)
+    {
+        const size_t selectedIndex = g_statsResultsList->getIndexSelected();
+        if (selectedIndex < g_filteredStatsRegistryIndexes.size())
+        {
+            selectedStat = kStatsRegistry[g_filteredStatsRegistryIndexes[selectedIndex]].stat;
+        }
+    }
+
+    const StatsRegistryEntry* entry = FindStatsRegistryEntry(selectedStat);
+    if (!entry)
+    {
+        return false;
+    }
+
+    if (entryOut)
+    {
+        *entryOut = entry;
+    }
+    return true;
+}
+
+bool TryReadCharacterStatValue(Character* character, StatsEnumerated stat, int* outValue)
+{
+    if (!character || !character->stats || !outValue)
+    {
+        return false;
+    }
+
+    __try
+    {
+        *outValue = RoundStatValueToInt(character->stats->getStat(stat, true));
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool AddUniqueStatsTarget(std::vector<Character*>* targets, Character* character)
+{
+    if (!targets || !character)
+    {
+        return false;
+    }
+
+    for (size_t index = 0; index < targets->size(); ++index)
+    {
+        if ((*targets)[index] == character)
+        {
+            return false;
+        }
+    }
+
+    targets->push_back(character);
+    return true;
+}
+
+bool TryCollectStatsTargets(PlayerInterface* player, bool applyToAllSelected, std::vector<Character*>* outTargets)
+{
+    if (!outTargets)
+    {
+        return false;
+    }
+
+    outTargets->clear();
+    if (!player)
+    {
+        return false;
+    }
+
+    if (!applyToAllSelected)
+    {
+        Character* primary = TryGetPrimarySelectedCharacter(player);
+        if (primary)
+        {
+            outTargets->push_back(primary);
+        }
+        return !outTargets->empty();
+    }
+
+    __try
+    {
+        const ogre_unordered_set<hand>::type& selectedCharacters = player->selectedCharacters;
+        ogre_unordered_set<hand>::type::const_iterator it = selectedCharacters.begin();
+        for (; it != selectedCharacters.end(); ++it)
+        {
+            AddUniqueStatsTarget(outTargets, it->getCharacter());
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        outTargets->clear();
+    }
+
+    AddUniqueStatsTarget(outTargets, TryGetPrimarySelectedCharacter(player));
+    return !outTargets->empty();
+}
+
+void RefreshStatsActionButtons(PlayerInterface* player)
+{
+    const int selectedCount = GetSelectedCharacterCount(player);
+    if (selectedCount <= 1)
+    {
+        g_statsApplyToAllSelected = false;
+    }
+
+    if (g_statsApplyToAllButton)
+    {
+        g_statsApplyToAllButton->setCaption(
+            std::string("Apply To All Selected: ") + (g_statsApplyToAllSelected ? "On" : "Off"));
+        g_statsApplyToAllButton->setEnabled(selectedCount > 1);
+    }
+
+    const bool hasPrimarySelectedCharacter = HasPrimarySelectedCharacter(player);
+    const bool hasTargets = g_statsApplyToAllSelected ? (selectedCount > 0) : hasPrimarySelectedCharacter;
+
+    const StatsRegistryEntry* entry = 0;
+    const bool hasSelectedStat = TryResolveSelectedStatsEntry(&entry) && entry != 0;
+    int inputValue = 0;
+    const bool hasValidInput =
+        g_statsInputEdit && TryParseNonNegativeInt(TrimAscii(g_statsInputEdit->getOnlyText().asUTF8()), &inputValue);
+    const bool setEnabled = hasTargets && hasSelectedStat && hasValidInput;
+    const bool deltaEnabled = setEnabled && inputValue > 0;
+
+    if (g_statsSetButton)
+    {
+        g_statsSetButton->setEnabled(setEnabled);
+    }
+    if (g_statsAddButton)
+    {
+        g_statsAddButton->setEnabled(deltaEnabled);
+    }
+    if (g_statsSubtractButton)
+    {
+        g_statsSubtractButton->setEnabled(deltaEnabled);
+    }
+}
+
+void RefreshStatsUi(PlayerInterface* player)
+{
+    const int selectedCount = GetSelectedCharacterCount(player);
+    const bool hasPrimarySelectedCharacter = HasPrimarySelectedCharacter(player);
+
+    if (g_statsScopeText)
+    {
+        if (!hasPrimarySelectedCharacter && selectedCount <= 0)
+        {
+            g_statsScopeText->setCaption("Scope: No selected character");
+        }
+        else if (g_statsApplyToAllSelected && selectedCount > 1)
+        {
+            std::stringstream caption;
+            caption << "Scope: All selected characters (" << selectedCount << ")";
+            g_statsScopeText->setCaption(caption.str());
+        }
+        else
+        {
+            g_statsScopeText->setCaption("Scope: Current selected character");
+        }
+    }
+
+    const StatsRegistryEntry* entry = 0;
+    if (!TryResolveSelectedStatsEntry(&entry) || !entry)
+    {
+        if (g_statsSelectedSummaryText)
+        {
+            g_statsSelectedSummaryText->setCaption("Selected: None");
+        }
+        if (g_statsCurrentValueText)
+        {
+            g_statsCurrentValueText->setCaption("Current: No stat selected");
+        }
+        if (g_statsInputLabelText)
+        {
+            g_statsInputLabelText->setCaption("Value / Delta");
+        }
+        if (g_statsPreviewText)
+        {
+            g_statsPreviewText->setCaption("Preview: Select a stat");
+        }
+        RefreshStatsActionButtons(player);
+        return;
+    }
+
+    if (g_statsSelectedSummaryText)
+    {
+        g_statsSelectedSummaryText->setCaption("Selected: " + BuildStatsSummaryLabel(*entry));
+    }
+
+    if (g_statsInputLabelText)
+    {
+        std::stringstream caption;
+        caption << "Value / Delta (" << entry->safeMinValue << "-" << entry->safeMaxValue << ")";
+        g_statsInputLabelText->setCaption(caption.str());
+    }
+
+    int currentValue = 0;
+    const bool hasCurrentValue =
+        hasPrimarySelectedCharacter && TryReadCharacterStatValue(TryGetPrimarySelectedCharacter(player), entry->stat, &currentValue);
+    if (g_statsCurrentValueText)
+    {
+        if (!hasCurrentValue)
+        {
+            g_statsCurrentValueText->setCaption("Current: No selected character");
+        }
+        else if (g_statsApplyToAllSelected && selectedCount > 1)
+        {
+            std::stringstream caption;
+            caption << "Current (primary): " << currentValue << " | " << selectedCount << " selected";
+            g_statsCurrentValueText->setCaption(caption.str());
+        }
+        else
+        {
+            std::stringstream caption;
+            caption << "Current: " << currentValue;
+            g_statsCurrentValueText->setCaption(caption.str());
+        }
+    }
+
+    if (g_statsPreviewText)
+    {
+        int inputValue = 0;
+        if (!hasCurrentValue)
+        {
+            g_statsPreviewText->setCaption("Preview: Select a character");
+        }
+        else if (!g_statsInputEdit
+            || !TryParseNonNegativeInt(TrimAscii(g_statsInputEdit->getOnlyText().asUTF8()), &inputValue))
+        {
+            g_statsPreviewText->setCaption("Preview: Enter a non-negative value");
+        }
+        else
+        {
+            const int setValue = ClampStatsValue(*entry, inputValue);
+            const int addValue = ClampStatsValue(*entry, currentValue + inputValue);
+            const int subtractValue = ClampStatsValue(*entry, currentValue - inputValue);
+
+            std::stringstream preview;
+            if (g_statsApplyToAllSelected && selectedCount > 1)
+            {
+                preview << "Preview (primary): ";
+            }
+            else
+            {
+                preview << "Preview: ";
+            }
+            preview << "from " << currentValue
+                    << " -> Set " << setValue
+                    << " | + " << addValue
+                    << " | - " << subtractValue;
+            g_statsPreviewText->setCaption(preview.str());
+        }
+    }
+
+    RefreshStatsActionButtons(player);
+}
+
+void RefreshStatsList()
+{
+    if (!g_statsResultsList)
+    {
+        g_filteredStatsRegistryIndexes.clear();
+        if (g_statsResultCountText)
+        {
+            g_statsResultCountText->setCaption("0 stats");
+        }
+        return;
+    }
+
+    const StatsEnumerated previouslySelectedStat = g_selectedStatsStat;
+
+    g_statsResultsList->removeAllItems();
+    g_filteredStatsRegistryIndexes.clear();
+
+    std::string searchUpper;
+    if (g_statsSearchEdit)
+    {
+        searchUpper = ToUpperAscii(TrimAscii(g_statsSearchEdit->getOnlyText().asUTF8()));
+    }
+
+    for (size_t index = 0; index < GetStatsRegistryCount(); ++index)
+    {
+        const StatsRegistryEntry& entry = kStatsRegistry[index];
+        if (!DoesStatsEntryMatchSearch(entry, searchUpper))
+        {
+            continue;
+        }
+
+        g_filteredStatsRegistryIndexes.push_back(index);
+        g_statsResultsList->addItem(BuildStatsListLabel(entry));
+    }
+
+    if (g_statsResultCountText)
+    {
+        std::stringstream caption;
+        caption << g_filteredStatsRegistryIndexes.size() << " stats";
+        g_statsResultCountText->setCaption(caption.str());
+    }
+
+    if (g_filteredStatsRegistryIndexes.empty())
+    {
+        g_statsResultsList->addItem("No matching stats");
+        g_statsResultsList->clearIndexSelected();
+        g_statsResultsList->beginToItemFirst();
+        g_selectedStatsStat = STAT_NONE;
+        RefreshStatsUi(g_lastPlayerInterface);
+        return;
+    }
+
+    size_t nextSelectedIndex = 0u;
+    for (size_t filteredIndex = 0; filteredIndex < g_filteredStatsRegistryIndexes.size(); ++filteredIndex)
+    {
+        if (kStatsRegistry[g_filteredStatsRegistryIndexes[filteredIndex]].stat == previouslySelectedStat)
+        {
+            nextSelectedIndex = filteredIndex;
+            break;
+        }
+    }
+
+    g_selectedStatsStat = kStatsRegistry[g_filteredStatsRegistryIndexes[nextSelectedIndex]].stat;
+    g_statsResultsList->setIndexSelected(nextSelectedIndex);
+    g_statsResultsList->beginToItemAt(nextSelectedIndex);
+    RefreshStatsUi(g_lastPlayerInterface);
+}
+
 void RefreshInventoryFoodItemDropdown()
 {
     if (!g_itemSearchResultsList)
@@ -4126,6 +4662,11 @@ void UpdatePanelTabButtonCaptions()
     if (g_healthTabButton)
     {
         g_healthTabButton->setCaption(g_activePanelTab == PanelTab_Health ? "[Health]" : "Health");
+    }
+
+    if (g_statsTabButton)
+    {
+        g_statsTabButton->setCaption(g_activePanelTab == PanelTab_Stats ? "[Stats]" : "Stats");
     }
 
     if (g_teleportTabButton)
@@ -5281,6 +5822,7 @@ bool TryGetSelectedSavedLocation(size_t* indexOut, SavedLocation* locationOut)
 void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
 {
     const bool healthVisible = bodyVisible && g_activePanelTab == PanelTab_Health;
+    const bool statsVisible = bodyVisible && g_activePanelTab == PanelTab_Stats;
     const bool teleportVisible = bodyVisible && g_activePanelTab == PanelTab_Teleport;
     const bool inventoryVisible = bodyVisible && g_activePanelTab == PanelTab_Inventory;
     const bool spawnVisible = bodyVisible && g_activePanelTab == PanelTab_Spawn;
@@ -5295,6 +5837,7 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_targetStateText, bodyVisible);
     SetWidgetVisible(g_noTargetText, bodyVisible);
     SetWidgetVisible(g_healthTabButton, bodyVisible);
+    SetWidgetVisible(g_statsTabButton, bodyVisible);
     SetWidgetVisible(g_teleportTabButton, bodyVisible);
     SetWidgetVisible(g_inventoryTabButton, bodyVisible);
     SetWidgetVisible(g_spawnTabButton, bodyVisible);
@@ -5310,6 +5853,22 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_damageRightLegButton, healthVisible);
     SetWidgetVisible(g_dangerousSectionText, healthVisible);
     SetWidgetVisible(g_forceDyingButton, healthVisible);
+
+    SetWidgetVisible(g_statsSectionText, statsVisible);
+    SetWidgetVisible(g_statsScopeText, statsVisible);
+    SetWidgetVisible(g_statsApplyToAllButton, statsVisible);
+    SetWidgetVisible(g_statsSearchLabelText, statsVisible);
+    SetWidgetVisible(g_statsSearchEdit, statsVisible);
+    SetWidgetVisible(g_statsResultCountText, statsVisible);
+    SetWidgetVisible(g_statsResultsList, statsVisible);
+    SetWidgetVisible(g_statsSelectedSummaryText, statsVisible);
+    SetWidgetVisible(g_statsCurrentValueText, statsVisible);
+    SetWidgetVisible(g_statsInputLabelText, statsVisible);
+    SetWidgetVisible(g_statsInputEdit, statsVisible);
+    SetWidgetVisible(g_statsSetButton, statsVisible);
+    SetWidgetVisible(g_statsAddButton, statsVisible);
+    SetWidgetVisible(g_statsSubtractButton, statsVisible);
+    SetWidgetVisible(g_statsPreviewText, statsVisible);
 
     SetWidgetVisible(g_teleportSectionText, teleportVisible);
     SetWidgetVisible(g_saveLocationNameLabelText, teleportVisible);
@@ -5556,6 +6115,10 @@ int GetActivePanelContentBottomInBodyCoords()
     int bottom = 198 - bodyTop;
     switch (g_activePanelTab)
     {
+    case PanelTab_Stats:
+        return GetWidgetBottom(
+            g_statsPreviewText,
+            GetWidgetBottom(g_statsSubtractButton, 654 - bodyTop));
     case PanelTab_Teleport:
         return GetSavedLocationsContentBottomInBodyCoords();
     case PanelTab_Inventory:
@@ -5994,6 +6557,7 @@ void ResetPanelWidgetPointers()
     g_targetStateText = 0;
     g_noTargetText = 0;
     g_healthTabButton = 0;
+    g_statsTabButton = 0;
     g_teleportTabButton = 0;
     g_inventoryTabButton = 0;
     g_statesSectionText = 0;
@@ -6005,6 +6569,21 @@ void ResetPanelWidgetPointers()
     g_damageRightArmButton = 0;
     g_damageLeftLegButton = 0;
     g_damageRightLegButton = 0;
+    g_statsSectionText = 0;
+    g_statsScopeText = 0;
+    g_statsApplyToAllButton = 0;
+    g_statsSearchLabelText = 0;
+    g_statsSearchEdit = 0;
+    g_statsResultCountText = 0;
+    g_statsResultsList = 0;
+    g_statsSelectedSummaryText = 0;
+    g_statsCurrentValueText = 0;
+    g_statsInputLabelText = 0;
+    g_statsInputEdit = 0;
+    g_statsSetButton = 0;
+    g_statsAddButton = 0;
+    g_statsSubtractButton = 0;
+    g_statsPreviewText = 0;
     g_teleportSectionText = 0;
     g_saveLocationNameLabelText = 0;
     g_saveLocationNameEdit = 0;
@@ -6056,6 +6635,9 @@ void ResetPanelWidgetPointers()
     g_dangerousSectionText = 0;
     g_forceDyingButton = 0;
     g_statusText = 0;
+    g_filteredStatsRegistryIndexes.clear();
+    g_selectedStatsStat = STAT_NONE;
+    g_statsApplyToAllSelected = false;
     g_filteredSavedLocationIndexes.clear();
     g_savedLocationRenameId.clear();
     g_savedLocationSearchText.clear();
@@ -9634,6 +10216,10 @@ void UpdateSelectionActionButtons(PlayerInterface* player)
     }
 
     RefreshSavedLocationActionButtons(player);
+    if (g_activePanelTab == PanelTab_Stats || g_statsApplyToAllSelected)
+    {
+        RefreshStatsUi(player);
+    }
     RefreshInventorySpawnButtonState();
     RefreshSpawnButtonState();
     RefreshSpawnPreviewText();
@@ -11251,6 +11837,395 @@ void OnAddMoneyButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
     }
 }
 
+const char* StatsEditOperationToActionId(StatsEditOperation operation)
+{
+    switch (operation)
+    {
+    case StatsEditOperation_Add:
+        return "add_stat";
+    case StatsEditOperation_Subtract:
+        return "subtract_stat";
+    case StatsEditOperation_Set:
+    default:
+        return "set_stat";
+    }
+}
+
+const char* StatsEditOperationToStatusVerb(StatsEditOperation operation)
+{
+    switch (operation)
+    {
+    case StatsEditOperation_Add:
+        return "Added";
+    case StatsEditOperation_Subtract:
+        return "Subtracted";
+    case StatsEditOperation_Set:
+    default:
+        return "Set";
+    }
+}
+
+const char* StatsEditOperationToStatusPreposition(StatsEditOperation operation)
+{
+    return operation == StatsEditOperation_Subtract ? "from" : "to";
+}
+
+int ResolveStatsEditResultValue(
+    const StatsRegistryEntry& entry,
+    StatsEditOperation operation,
+    int currentValue,
+    int inputValue)
+{
+    switch (operation)
+    {
+    case StatsEditOperation_Add:
+        return ClampStatsValue(entry, currentValue + inputValue);
+    case StatsEditOperation_Subtract:
+        return ClampStatsValue(entry, currentValue - inputValue);
+    case StatsEditOperation_Set:
+    default:
+        return ClampStatsValue(entry, inputValue);
+    }
+}
+
+bool TryApplyStatsEditToCharacter(
+    Character* character,
+    const StatsRegistryEntry& entry,
+    StatsEditOperation operation,
+    int inputValue,
+    int* beforeValueOut,
+    int* afterValueOut,
+    bool* clampedOut)
+{
+    if (!character || !character->stats)
+    {
+        return false;
+    }
+
+    if (beforeValueOut)
+    {
+        *beforeValueOut = 0;
+    }
+    if (afterValueOut)
+    {
+        *afterValueOut = 0;
+    }
+    if (clampedOut)
+    {
+        *clampedOut = false;
+    }
+
+    __try
+    {
+        CharStats* stats = character->stats;
+        const int beforeValue = RoundStatValueToInt(stats->getStat(entry.stat, true));
+        const int rawTargetValue =
+            operation == StatsEditOperation_Set
+                ? inputValue
+                : (operation == StatsEditOperation_Add ? beforeValue + inputValue : beforeValue - inputValue);
+        const int afterValue = ResolveStatsEditResultValue(entry, operation, beforeValue, inputValue);
+        float& statRef = stats->getStatRef(entry.stat);
+        statRef = static_cast<float>(afterValue);
+
+        if (beforeValueOut)
+        {
+            *beforeValueOut = beforeValue;
+        }
+        if (afterValueOut)
+        {
+            *afterValueOut = afterValue;
+        }
+        if (clampedOut)
+        {
+            *clampedOut = rawTargetValue != afterValue;
+        }
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+void ApplyStatsEditOperation(StatsEditOperation operation)
+{
+    const char* actionId = StatsEditOperationToActionId(operation);
+    LogActionRequested(actionId);
+
+    if (!g_lastPlayerInterface)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_player_interface\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Stats edit failed - player interface unavailable");
+        return;
+    }
+
+    const StatsRegistryEntry* entry = 0;
+    if (!TryResolveSelectedStatsEntry(&entry) || !entry)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_stat_selected\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Stats edit failed - select a stat");
+        return;
+    }
+
+    if (!g_statsInputEdit)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"missing_input_widget\""
+               << " stat=\"" << SanitizeLogValue(entry->label) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(std::string(entry->label) + " edit failed - input unavailable");
+        return;
+    }
+
+    const std::string inputText = TrimAscii(g_statsInputEdit->getOnlyText().asUTF8());
+    int inputValue = 0;
+    if (!TryParseNonNegativeInt(inputText, &inputValue)
+        || ((operation == StatsEditOperation_Add || operation == StatsEditOperation_Subtract) && inputValue <= 0))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"invalid_value\""
+               << " stat=\"" << SanitizeLogValue(entry->label) << "\""
+               << " value_text=\"" << SanitizeLogValue(inputText) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage(
+            std::string(entry->label)
+            + (operation == StatsEditOperation_Set
+                    ? " edit failed - enter a value from 0 to 100"
+                    : " edit failed - enter a positive value"));
+        return;
+    }
+
+    g_statsInputEdit->setOnlyText(inputText);
+
+    std::vector<Character*> targets;
+    if (!TryCollectStatsTargets(g_lastPlayerInterface, g_statsApplyToAllSelected, &targets) || targets.empty())
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_selected_character\""
+               << " stat=\"" << SanitizeLogValue(entry->label) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Stats edit failed - select a character");
+        return;
+    }
+
+    const Character* primaryTarget = TryGetPrimarySelectedCharacter(g_lastPlayerInterface);
+    const std::string primaryName = primaryTarget ? SafeCharacterName(const_cast<Character*>(primaryTarget)) : "";
+
+    int appliedCount = 0;
+    int primaryBeforeValue = 0;
+    int primaryAfterValue = 0;
+    bool primaryObserved = false;
+    bool anyClamped = false;
+
+    for (size_t index = 0; index < targets.size(); ++index)
+    {
+        int beforeValue = 0;
+        int afterValue = 0;
+        bool clamped = false;
+        if (!TryApplyStatsEditToCharacter(
+                targets[index],
+                *entry,
+                operation,
+                inputValue,
+                &beforeValue,
+                &afterValue,
+                &clamped))
+        {
+            continue;
+        }
+
+        ++appliedCount;
+        if (clamped)
+        {
+            anyClamped = true;
+        }
+
+        if (!primaryObserved && primaryTarget && targets[index] == primaryTarget)
+        {
+            primaryBeforeValue = beforeValue;
+            primaryAfterValue = afterValue;
+            primaryObserved = true;
+        }
+    }
+
+    const bool success = appliedCount > 0;
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"" << actionId << "\" success="
+           << (success ? "true" : "false")
+           << " stat=\"" << SanitizeLogValue(entry->label) << "\""
+           << " requested_value=" << inputValue
+           << " apply_to_all_selected=" << (g_statsApplyToAllSelected ? "true" : "false")
+           << " target_count=" << targets.size()
+           << " applied_count=" << appliedCount
+           << " clamped=" << (anyClamped ? "true" : "false");
+    if (primaryObserved)
+    {
+        result << " primary_before=" << primaryBeforeValue
+               << " primary_after=" << primaryAfterValue;
+    }
+    if (!success)
+    {
+        result << " reason=\"apply_failed\"";
+    }
+    LogInfoLine(result.str());
+
+    RefreshStatsUi(g_lastPlayerInterface);
+
+    if (!success)
+    {
+        SetStatusMessage(std::string(entry->label) + " edit failed - stat path unavailable");
+        return;
+    }
+
+    std::stringstream status;
+    if (operation == StatsEditOperation_Set)
+    {
+        if (appliedCount == 1 && !primaryName.empty())
+        {
+            status << "Set " << entry->label << " to " << (primaryObserved ? primaryAfterValue : inputValue)
+                   << " for " << primaryName;
+        }
+        else if (appliedCount == static_cast<int>(targets.size()))
+        {
+            status << "Set " << entry->label << " for " << appliedCount << " selected character(s)";
+        }
+        else
+        {
+            status << "Set " << entry->label << " for " << appliedCount << " of " << targets.size()
+                   << " selected character(s)";
+        }
+    }
+    else
+    {
+        status << StatsEditOperationToStatusVerb(operation) << ' ' << inputValue << ' ' << entry->label << ' ';
+        status << StatsEditOperationToStatusPreposition(operation) << ' ';
+        if (appliedCount == 1 && !primaryName.empty())
+        {
+            status << primaryName;
+        }
+        else if (appliedCount == static_cast<int>(targets.size()))
+        {
+            status << appliedCount << " selected character(s)";
+        }
+        else
+        {
+            status << appliedCount << " of " << targets.size() << " selected character(s)";
+        }
+    }
+
+    if (anyClamped)
+    {
+        status << " (clamped)";
+    }
+    SetStatusMessage(status.str());
+}
+
+void OnStatsSearchTextChanged(MyGUI::EditBox*)
+{
+    RefreshStatsList();
+}
+
+void OnStatsResultsSelectionChanged(MyGUI::ListBox*, size_t index)
+{
+    if (index >= g_filteredStatsRegistryIndexes.size())
+    {
+        g_selectedStatsStat = STAT_NONE;
+    }
+    else
+    {
+        g_selectedStatsStat = kStatsRegistry[g_filteredStatsRegistryIndexes[index]].stat;
+    }
+
+    RefreshStatsUi(g_lastPlayerInterface);
+}
+
+void OnStatsInputTextChanged(MyGUI::EditBox*)
+{
+    RefreshStatsUi(g_lastPlayerInterface);
+}
+
+void OnStatsApplyToAllButtonClicked(MyGUI::Widget*)
+{
+    if (GetSelectedCharacterCount(g_lastPlayerInterface) <= 1)
+    {
+        g_statsApplyToAllSelected = false;
+    }
+    else
+    {
+        g_statsApplyToAllSelected = !g_statsApplyToAllSelected;
+    }
+
+    RefreshStatsUi(g_lastPlayerInterface);
+}
+
+void OnStatsApplyToAllButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    OnStatsApplyToAllButtonClicked(0);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnStatsSetButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    ApplyStatsEditOperation(StatsEditOperation_Set);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnStatsAddButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    ApplyStatsEditOperation(StatsEditOperation_Add);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnStatsSubtractButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    ApplyStatsEditOperation(StatsEditOperation_Subtract);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnInventoryItemSearchTextChanged(MyGUI::EditBox*)
 {
     EnsureInventoryFoodItemOptionsLoaded();
@@ -12577,6 +13552,24 @@ void OnHealthTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
     }
 }
 
+void OnStatsTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    RefreshStatsList();
+    RefreshStatsUi(g_lastPlayerInterface);
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    SetActivePanelTab(PanelTab_Stats);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
 void OnTeleportTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
 {
     if (id != MyGUI::MouseButton::Left)
@@ -12885,6 +13878,7 @@ void ApplySectionHeaderFonts()
         g_targetSectionText,
         g_statesSectionText,
         g_limbDamageSectionText,
+        g_statsSectionText,
         g_teleportSectionText,
         g_savedLocationsSectionText,
         g_inventorySectionText,
@@ -13000,6 +13994,7 @@ bool HasAllPanelWidgets()
         && g_targetStateText
         && g_noTargetText
         && g_healthTabButton
+        && g_statsTabButton
         && g_teleportTabButton
         && g_inventoryTabButton
         && g_spawnTabButton
@@ -13012,6 +14007,21 @@ bool HasAllPanelWidgets()
         && g_damageRightArmButton
         && g_damageLeftLegButton
         && g_damageRightLegButton
+        && g_statsSectionText
+        && g_statsScopeText
+        && g_statsApplyToAllButton
+        && g_statsSearchLabelText
+        && g_statsSearchEdit
+        && g_statsResultCountText
+        && g_statsResultsList
+        && g_statsSelectedSummaryText
+        && g_statsCurrentValueText
+        && g_statsInputLabelText
+        && g_statsInputEdit
+        && g_statsSetButton
+        && g_statsAddButton
+        && g_statsSubtractButton
+        && g_statsPreviewText
         && g_teleportSectionText
         && g_saveLocationNameLabelText
         && g_saveLocationNameEdit
@@ -13098,6 +14108,14 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_noTargetText);
     ConfigureTextWidget(g_statesSectionText);
     ConfigureTextWidget(g_limbDamageSectionText);
+    ConfigureTextWidget(g_statsSectionText);
+    ConfigureTextWidget(g_statsScopeText);
+    ConfigureTextWidget(g_statsSearchLabelText);
+    ConfigureTextWidget(g_statsResultCountText);
+    ConfigureTextWidget(g_statsSelectedSummaryText);
+    ConfigureTextWidget(g_statsCurrentValueText);
+    ConfigureTextWidget(g_statsInputLabelText);
+    ConfigureTextWidget(g_statsPreviewText);
     ConfigureTextWidget(g_teleportSectionText);
     ConfigureTextWidget(g_saveLocationNameLabelText);
     ConfigureTextWidget(g_savedLocationsSectionText);
@@ -13125,6 +14143,8 @@ void InitializePanelWidgets()
     ApplySectionHeaderFonts();
     ConfigureEditBoxWidget(g_saveLocationNameEdit);
     ConfigureEditBoxWidget(g_savedLocationSearchEdit);
+    ConfigureEditBoxWidget(g_statsSearchEdit);
+    ConfigureEditBoxWidget(g_statsInputEdit);
     ConfigureEditBoxWidget(g_moneyAmountEdit);
     ConfigureEditBoxWidget(g_itemSearchEdit);
     ConfigureEditBoxWidget(g_itemQuantityEdit);
@@ -13137,6 +14157,7 @@ void InitializePanelWidgets()
     ConfigureComboBoxWidget(g_spawnCreatureAgeDropdown);
     ConfigureComboBoxWidget(g_spawnModeDropdown);
     ConfigureListBoxWidget(g_savedLocationsListBox);
+    ConfigureListBoxWidget(g_statsResultsList);
     ConfigureListBoxWidget(g_itemSearchResultsList);
     ConfigureListBoxWidget(g_spawnResultsList);
 
@@ -13154,6 +14175,14 @@ void InitializePanelWidgets()
     UpdatePanelTabButtonCaptions();
     g_statesSectionText->setCaption("States");
     g_limbDamageSectionText->setCaption("Limb Damage");
+    g_statsSectionText->setCaption("Stats");
+    g_statsScopeText->setCaption("Scope: No selected character");
+    g_statsSearchLabelText->setCaption("Search");
+    g_statsResultCountText->setCaption("0 stats");
+    g_statsSelectedSummaryText->setCaption("Selected: None");
+    g_statsCurrentValueText->setCaption("Current: No stat selected");
+    g_statsInputLabelText->setCaption("Value / Delta");
+    g_statsPreviewText->setCaption("Preview: Select a stat");
     g_teleportSectionText->setCaption("Teleport");
     g_saveLocationNameLabelText->setCaption("Location Name (Enter to save)");
     g_savedLocationsSectionText->setCaption("Saved Locations");
@@ -13188,6 +14217,20 @@ void InitializePanelWidgets()
     g_damageRightArmButton->setCaption("Damage Right Arm");
     g_damageLeftLegButton->setCaption("Damage Left Leg");
     g_damageRightLegButton->setCaption("Damage Right Leg");
+    g_statsApplyToAllButton->setCaption("Apply To All Selected: Off");
+    g_statsSearchEdit->setEditStatic(false);
+    g_statsSearchEdit->setMaxTextLength(48);
+    g_statsSearchEdit->setOnlyText("");
+    g_statsResultsList->removeAllItems();
+    g_statsResultsList->clearIndexSelected();
+    g_statsInputEdit->setEditStatic(false);
+    g_statsInputEdit->setMaxTextLength(3);
+    g_statsInputEdit->setOnlyText("10");
+    g_statsSetButton->setCaption("Set");
+    g_statsAddButton->setCaption("+");
+    g_statsSubtractButton->setCaption("-");
+    RefreshStatsList();
+    RefreshStatsUi(g_lastPlayerInterface);
     g_saveLocationNameEdit->setEditStatic(false);
     g_saveLocationNameEdit->setMaxTextLength(64);
     g_saveLocationNameEdit->setOnlyText("");
@@ -13270,6 +14313,7 @@ void InitializePanelWidgets()
     g_collapseButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCollapseButtonClicked);
     g_closeButton->eventMouseButtonClick += MyGUI::newDelegate(&OnCloseButtonClicked);
     g_healthTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnHealthTabButtonPressed);
+    g_statsTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsTabButtonPressed);
     g_teleportTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnTeleportTabButtonPressed);
     g_inventoryTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnInventoryTabButtonPressed);
     g_spawnTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnTabButtonPressed);
@@ -13280,6 +14324,13 @@ void InitializePanelWidgets()
     g_damageRightArmButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightArmButtonPressed);
     g_damageLeftLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftLegButtonPressed);
     g_damageRightLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightLegButtonPressed);
+    g_statsApplyToAllButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsApplyToAllButtonPressed);
+    g_statsSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnStatsSearchTextChanged);
+    g_statsResultsList->eventListChangePosition += MyGUI::newDelegate(&OnStatsResultsSelectionChanged);
+    g_statsInputEdit->eventEditTextChange += MyGUI::newDelegate(&OnStatsInputTextChanged);
+    g_statsSetButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsSetButtonPressed);
+    g_statsAddButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsAddButtonPressed);
+    g_statsSubtractButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsSubtractButtonPressed);
     g_saveLocationNameEdit->eventEditTextChange += MyGUI::newDelegate(&OnSaveLocationNameTextChanged);
     g_saveLocationNameEdit->eventEditSelectAccept += MyGUI::newDelegate(&OnSaveLocationNameAccepted);
     g_saveSelectedLocationButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSaveSelectedLocationButtonPressed);
@@ -13440,19 +14491,23 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_healthTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 170, 80, 28),
+        BuildBodyCoord(10, 170, 68, 28),
+        MyGUI::Align::Default);
+    g_statsTabButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(78, 170, 68, 28),
         MyGUI::Align::Default);
     g_teleportTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(100, 170, 80, 28),
+        BuildBodyCoord(146, 170, 68, 28),
         MyGUI::Align::Default);
     g_inventoryTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(180, 170, 80, 28),
+        BuildBodyCoord(214, 170, 68, 28),
         MyGUI::Align::Default);
     g_spawnTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(260, 170, 80, 28),
+        BuildBodyCoord(282, 170, 68, 28),
         MyGUI::Align::Default);
     g_statesSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
@@ -13489,6 +14544,66 @@ void CreatePanelWidgets()
     g_damageRightLegButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
         BuildBodyCoord(184, 388, 156, 28),
+        MyGUI::Align::Default);
+    g_statsSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_statsScopeText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 232, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_statsApplyToAllButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 254, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_statsSearchLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 288, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_statsSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        BuildBodyCoord(20, 310, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_statsResultCountText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 344, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_statsResultsList = bodyParent->createWidget<MyGUI::ListBox>(
+        "Kenshi_ListBox",
+        BuildBodyCoord(20, 366, kPanelWidth - 40, 154),
+        MyGUI::Align::Default);
+    g_statsSelectedSummaryText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 526, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_statsCurrentValueText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 548, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_statsInputLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 570, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_statsInputEdit = bodyParent->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        BuildBodyCoord(20, 592, 96, 28),
+        MyGUI::Align::Default);
+    g_statsSetButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(124, 592, 64, 28),
+        MyGUI::Align::Default);
+    g_statsAddButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(196, 592, 64, 28),
+        MyGUI::Align::Default);
+    g_statsSubtractButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(268, 592, 72, 28),
+        MyGUI::Align::Default);
+    g_statsPreviewText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 626, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_teleportSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
