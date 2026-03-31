@@ -57,7 +57,10 @@ const char* kSavedLocationsConfigKey = "saved_locations";
 const char* kDefaultTogglePanelKey = "D";
 const int kPanelLeft = 18;
 const int kPanelTop = 140;
-const int kPanelWidth = 360;
+int kPanelWidth = 360;
+const int kPanelWidthDefault = 360;
+const int kPanelWidthLowerBound = 360;
+const int kPanelWidthUpperBound = 560;
 const int kPanelExpandedHeight = 708;
 const int kPanelMinExpandedHeightDefault = 320;
 const int kPanelExpandedHeightLowerBound = 260;
@@ -117,6 +120,9 @@ const char* kModHubModDisplayName = "Emkejs Test Kit";
 const char* kModHubTogglePanelKeyLabel = "Debug Panel Key";
 const char* kModHubTogglePanelKeyDescription =
     "Primary key for showing or hiding the debug panel. Use the modifier toggles below for Ctrl, Shift, and Alt. Unbind to disable.";
+const char* kModHubEnabledLabel = "Enabled";
+const char* kModHubEnabledDescription =
+    "Basic master switch for the mod. Disabling it keeps Mod Hub settings visible but turns off the panel and hotkey behavior.";
 const char* kModHubTogglePanelCtrlLabel = "Require Ctrl";
 const char* kModHubTogglePanelCtrlDescription = "Require Ctrl for the debug panel hotkey.";
 const char* kModHubTogglePanelShiftLabel = "Require Shift";
@@ -126,6 +132,9 @@ const char* kModHubTogglePanelAltDescription = "Require Alt for the debug panel 
 const char* kModHubPanelMinHeightLabel = "Min Panel Height";
 const char* kModHubPanelMinHeightDescription =
     "Minimum expanded height for the debug panel. Smaller active tabs still keep at least this height.";
+const char* kModHubPanelWidthLabel = "Panel Width";
+const char* kModHubPanelWidthDescription =
+    "Overall width of the debug panel. Wider values give long labels, lists, and previews more room.";
 const char* kModHubPanelMaxHeightLabel = "Max Panel Height";
 const char* kModHubPanelMaxHeightDescription =
     "Maximum expanded height for the debug panel. Taller tab content scrolls inside the panel.";
@@ -290,43 +299,63 @@ enum StatsEditOperation
     StatsEditOperation_Subtract = 2
 };
 
+enum StatsGroup
+{
+    StatsGroup_Core = 0,
+    StatsGroup_MovementUtility = 1,
+    StatsGroup_Combat = 2,
+    StatsGroup_WeaponSkills = 3,
+    StatsGroup_Labor = 4
+};
+
+enum StatsSectionFilter
+{
+    StatsSectionFilter_All = 0,
+    StatsSectionFilter_CommonTest = 1,
+    StatsSectionFilter_Core = 2,
+    StatsSectionFilter_MovementUtility = 3,
+    StatsSectionFilter_Combat = 4,
+    StatsSectionFilter_WeaponSkills = 5,
+    StatsSectionFilter_Labor = 6
+};
+
 struct StatsRegistryEntry
 {
     StatsEnumerated stat;
     const char* label;
-    const char* groupLabel;
+    StatsGroup group;
     bool commonTestStat;
     int safeMinValue;
     int safeMaxValue;
 };
 
 const StatsRegistryEntry kStatsRegistry[] = {
-    { STAT_STRENGTH, "Strength", "Core", true, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_TOUGHNESS, "Toughness", "Core", true, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_DEXTERITY, "Dexterity", "Core", true, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_ATHLETICS, "Athletics", "Movement / Utility", true, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_MELEE_ATTACK, "Melee Attack", "Combat", true, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_MELEE_DEFENCE, "Melee Defense", "Combat", true, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_PERCEPTION, "Perception", "Core", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_STEALTH, "Stealth", "Movement / Utility", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_THIEVING, "Thievery", "Movement / Utility", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_ASSASSINATION, "Assassination", "Movement / Utility", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_MARTIALARTS, "Martial Arts", "Combat", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_DODGE, "Dodge", "Combat", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_TURRETS, "Turrets", "Combat", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_FRIENDLY_FIRE, "Precision Shooting", "Combat", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_SABRES, "Sabres", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_KATANAS, "Katanas", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_HACKERS, "Hackers", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_HEAVYWEAPONS, "Heavy Weapons", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_BLUNT, "Blunt", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_POLEARMS, "Polearms", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_CROSSBOWS, "Crossbows", "Weapon Skills", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_LABOURING, "Labouring", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_MEDIC, "Field Medic", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_ROBOTICS, "Robotics", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_SCIENCE, "Science", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax },
-    { STAT_ENGINEERING, "Engineering", "Labor", false, kStatsSafeValueMin, kStatsSafeValueMax }
+    { STAT_STRENGTH, "Strength", StatsGroup_Core, true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_TOUGHNESS, "Toughness", StatsGroup_Core, true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_DEXTERITY, "Dexterity", StatsGroup_Core, true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_ATHLETICS, "Athletics", StatsGroup_MovementUtility, true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_MELEE_ATTACK, "Melee Attack", StatsGroup_Combat, true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_MELEE_DEFENCE, "Melee Defense", StatsGroup_Combat, true, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_PERCEPTION, "Perception", StatsGroup_Core, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_STEALTH, "Stealth", StatsGroup_MovementUtility, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_THIEVING, "Thievery", StatsGroup_MovementUtility, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_ASSASSINATION, "Assassination", StatsGroup_MovementUtility, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_MARTIALARTS, "Martial Arts", StatsGroup_Combat, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_DODGE, "Dodge", StatsGroup_Combat, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_TURRETS, "Turrets", StatsGroup_Combat, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_FRIENDLY_FIRE, "Precision Shooting", StatsGroup_Combat, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_SABRES, "Sabres", StatsGroup_WeaponSkills, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_KATANAS, "Katanas", StatsGroup_WeaponSkills, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_HACKERS, "Hackers", StatsGroup_WeaponSkills, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_HEAVYWEAPONS, "Heavy Weapons", StatsGroup_WeaponSkills, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_BLUNT, "Blunt", StatsGroup_WeaponSkills, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_POLEARMS, "Polearms", StatsGroup_WeaponSkills, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_CROSSBOWS, "Crossbows", StatsGroup_WeaponSkills, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_LABOURING, "Labouring", StatsGroup_Labor, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_MEDIC, "Field Medic", StatsGroup_Labor, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_ROBOTICS, "Robotics", StatsGroup_Labor, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_SCIENCE, "Science", StatsGroup_Labor, false, kStatsSafeValueMin, kStatsSafeValueMax },
+    { STAT_ENGINEERING, "Engineering", StatsGroup_Labor, false, kStatsSafeValueMin, kStatsSafeValueMax }
 };
 
 enum SpawnTemplateCategory
@@ -637,6 +666,14 @@ MyGUI::Button* g_damageRightLegButton = 0;
 MyGUI::TextBox* g_statsSectionText = 0;
 MyGUI::TextBox* g_statsScopeText = 0;
 MyGUI::Button* g_statsApplyToAllButton = 0;
+MyGUI::TextBox* g_statsSectionFilterText = 0;
+MyGUI::Button* g_statsAllSectionButton = 0;
+MyGUI::Button* g_statsCommonSectionButton = 0;
+MyGUI::Button* g_statsCoreSectionButton = 0;
+MyGUI::Button* g_statsUtilitySectionButton = 0;
+MyGUI::Button* g_statsCombatSectionButton = 0;
+MyGUI::Button* g_statsWeaponsSectionButton = 0;
+MyGUI::Button* g_statsLaborSectionButton = 0;
 MyGUI::TextBox* g_statsSearchLabelText = 0;
 MyGUI::EditBox* g_statsSearchEdit = 0;
 MyGUI::TextBox* g_statsResultCountText = 0;
@@ -703,7 +740,7 @@ MyGUI::TextBox* g_statusText = 0;
 
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
-std::vector<size_t> g_filteredStatsRegistryIndexes;
+std::vector<int> g_filteredStatsRegistryIndexes;
 std::vector<SpawnTemplateOption> g_spawnTemplateOptions;
 std::vector<size_t> g_filteredSpawnTemplateOptionIndexes;
 std::vector<SavedLocation> g_savedLocations;
@@ -713,6 +750,7 @@ std::string g_savedLocationSearchText;
 std::string g_selectedSavedLocationId;
 StatsEnumerated g_selectedStatsStat = STAT_NONE;
 bool g_statsApplyToAllSelected = false;
+StatsSectionFilter g_activeStatsSectionFilter = StatsSectionFilter_All;
 bool g_savedLocationsCollapsed = false;
 bool g_spawnSelectionSyncInProgress = false;
 bool g_inventoryFoodItemOptionsLoaded = false;
@@ -733,10 +771,20 @@ int GetSelectedCharacterCount(PlayerInterface* player);
 bool HasPrimarySelectedCharacter(PlayerInterface* player);
 Character* TryGetPrimarySelectedCharacter(PlayerInterface* player);
 int ClampIntValue(int value, int minValue, int maxValue);
+int ClampPanelWidthValue(int value);
 void ConfigureTextWidget(MyGUI::TextBox* widget);
 void SetActivePanelTab(PanelTab tab);
+void CreatePanelWidgets();
+void DestroyPanel();
 void RefreshStatsUi(PlayerInterface* player);
 void OnStatsTabButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsAllSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsCommonSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsCoreSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsUtilitySectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsCombatSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsWeaponsSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsLaborSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnSaveSelectedLocationButtonClicked(MyGUI::Widget*);
 bool TryResolveSelectedStatsEntry(const StatsRegistryEntry** entryOut);
 bool TryResolveSelectedInventoryFoodItem(GameData** itemDataOut, std::string* itemLabelOut);
@@ -3690,10 +3738,12 @@ bool TrySaveTogglePanelHotkeyConfig(const char** outError)
         return false;
     }
 
-    if (!TryReplaceJsonStringByKey(&configText, "toggle_panel_key", g_togglePanelKey)
+    if (!TryReplaceJsonBoolByKey(&configText, "enabled", g_pluginEnabled)
+        || !TryReplaceJsonStringByKey(&configText, "toggle_panel_key", g_togglePanelKey)
         || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_ctrl", g_togglePanelRequireCtrl)
         || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_shift", g_togglePanelRequireShift)
         || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_alt", g_togglePanelRequireAlt)
+        || !TryUpsertJsonIntByKey(&configText, "panel_width", kPanelWidth)
         || !TryUpsertJsonIntByKey(&configText, "panel_min_expanded_height", g_panelMinExpandedHeight)
         || !TryUpsertJsonIntByKey(&configText, "panel_max_expanded_height", g_panelMaxExpandedHeight))
     {
@@ -3804,6 +3854,130 @@ int ClampStatsValue(const StatsRegistryEntry& entry, int value)
     return ClampIntValue(value, entry.safeMinValue, entry.safeMaxValue);
 }
 
+const char* GetStatsGroupLabel(StatsGroup group)
+{
+    switch (group)
+    {
+    case StatsGroup_Core:
+        return "Core";
+    case StatsGroup_MovementUtility:
+        return "Movement / Utility";
+    case StatsGroup_Combat:
+        return "Combat";
+    case StatsGroup_WeaponSkills:
+        return "Weapon Skills";
+    case StatsGroup_Labor:
+        return "Labor";
+    default:
+        break;
+    }
+
+    return "Unknown";
+}
+
+const char* GetStatsSectionFilterLabel(StatsSectionFilter filter)
+{
+    switch (filter)
+    {
+    case StatsSectionFilter_All:
+        return "All";
+    case StatsSectionFilter_CommonTest:
+        return "Common";
+    case StatsSectionFilter_Core:
+        return "Core";
+    case StatsSectionFilter_MovementUtility:
+        return "Movement / Utility";
+    case StatsSectionFilter_Combat:
+        return "Combat";
+    case StatsSectionFilter_WeaponSkills:
+        return "Weapon Skills";
+    case StatsSectionFilter_Labor:
+        return "Labor";
+    default:
+        break;
+    }
+
+    return "Unknown";
+}
+
+const char* GetStatsSectionButtonLabel(StatsSectionFilter filter)
+{
+    switch (filter)
+    {
+    case StatsSectionFilter_All:
+        return "All";
+    case StatsSectionFilter_CommonTest:
+        return "Common";
+    case StatsSectionFilter_Core:
+        return "Core";
+    case StatsSectionFilter_MovementUtility:
+        return "Utility";
+    case StatsSectionFilter_Combat:
+        return "Combat";
+    case StatsSectionFilter_WeaponSkills:
+        return "Weapons";
+    case StatsSectionFilter_Labor:
+        return "Labor";
+    default:
+        break;
+    }
+
+    return "Unknown";
+}
+
+bool DoesStatsEntryMatchSectionFilter(const StatsRegistryEntry& entry, StatsSectionFilter filter)
+{
+    switch (filter)
+    {
+    case StatsSectionFilter_All:
+        return true;
+    case StatsSectionFilter_CommonTest:
+        return entry.commonTestStat;
+    case StatsSectionFilter_Core:
+        return entry.group == StatsGroup_Core;
+    case StatsSectionFilter_MovementUtility:
+        return entry.group == StatsGroup_MovementUtility;
+    case StatsSectionFilter_Combat:
+        return entry.group == StatsGroup_Combat;
+    case StatsSectionFilter_WeaponSkills:
+        return entry.group == StatsGroup_WeaponSkills;
+    case StatsSectionFilter_Labor:
+        return entry.group == StatsGroup_Labor;
+    default:
+        break;
+    }
+
+    return false;
+}
+
+void UpdateStatsSectionButtonCaption(MyGUI::Button* button, StatsSectionFilter filter)
+{
+    if (!button)
+    {
+        return;
+    }
+
+    const char* label = GetStatsSectionButtonLabel(filter);
+    if (g_activeStatsSectionFilter == filter)
+    {
+        button->setCaption(std::string("[") + label + "]");
+        return;
+    }
+
+    button->setCaption(label);
+}
+
+void UpdateStatsSectionButtonCaptions()
+{
+    UpdateStatsSectionButtonCaption(g_statsAllSectionButton, StatsSectionFilter_All);
+    UpdateStatsSectionButtonCaption(g_statsCommonSectionButton, StatsSectionFilter_CommonTest);
+    UpdateStatsSectionButtonCaption(g_statsCoreSectionButton, StatsSectionFilter_Core);
+    UpdateStatsSectionButtonCaption(g_statsUtilitySectionButton, StatsSectionFilter_MovementUtility);
+    UpdateStatsSectionButtonCaption(g_statsCombatSectionButton, StatsSectionFilter_Combat);
+    UpdateStatsSectionButtonCaption(g_statsWeaponsSectionButton, StatsSectionFilter_WeaponSkills);
+    UpdateStatsSectionButtonCaption(g_statsLaborSectionButton, StatsSectionFilter_Labor);
+}
+
 int RoundStatValueToInt(float value)
 {
     if (value >= 0.0f)
@@ -3818,29 +3992,41 @@ std::string BuildStatsListLabel(const StatsRegistryEntry& entry)
 {
     std::stringstream label;
     label << entry.label;
+    const char* groupLabel = GetStatsGroupLabel(entry.group);
     if (entry.commonTestStat)
     {
-        label << " [Common, " << entry.groupLabel << "]";
+        label << " [Common, " << groupLabel << "]";
     }
-    else if (entry.groupLabel && entry.groupLabel[0] != '\0')
+    else if (groupLabel && groupLabel[0] != '\0')
     {
-        label << " [" << entry.groupLabel << "]";
+        label << " [" << groupLabel << "]";
     }
 
     return label.str();
+}
+
+std::string BuildStatsSectionedListLabel(const StatsRegistryEntry& entry, bool includeGroupingHint)
+{
+    if (!includeGroupingHint)
+    {
+        return entry.label;
+    }
+
+    return BuildStatsListLabel(entry);
 }
 
 std::string BuildStatsSummaryLabel(const StatsRegistryEntry& entry)
 {
     std::stringstream label;
     label << entry.label;
+    const char* groupLabel = GetStatsGroupLabel(entry.group);
     if (entry.commonTestStat)
     {
-        label << " (Common / " << entry.groupLabel << ")";
+        label << " (Common / " << groupLabel << ")";
     }
-    else if (entry.groupLabel && entry.groupLabel[0] != '\0')
+    else if (groupLabel && groupLabel[0] != '\0')
     {
-        label << " (" << entry.groupLabel << ")";
+        label << " (" << groupLabel << ")";
     }
 
     return label.str();
@@ -3855,9 +4041,10 @@ bool DoesStatsEntryMatchSearch(const StatsRegistryEntry& entry, const std::strin
 
     std::stringstream searchable;
     searchable << entry.label;
-    if (entry.groupLabel && entry.groupLabel[0] != '\0')
+    const char* groupLabel = GetStatsGroupLabel(entry.group);
+    if (groupLabel && groupLabel[0] != '\0')
     {
-        searchable << ' ' << entry.groupLabel;
+        searchable << ' ' << groupLabel;
     }
     if (entry.commonTestStat)
     {
@@ -3865,6 +4052,96 @@ bool DoesStatsEntryMatchSearch(const StatsRegistryEntry& entry, const std::strin
     }
 
     return ToUpperAscii(searchable.str()).find(searchUpper) != std::string::npos;
+}
+
+std::string BuildStatsSectionAllListLabel(StatsSectionFilter section)
+{
+    switch (section)
+    {
+    case StatsSectionFilter_CommonTest:
+        return "All Common test stats";
+    case StatsSectionFilter_Core:
+        return "All Core stats";
+    case StatsSectionFilter_MovementUtility:
+        return "All Movement / Utility stats";
+    case StatsSectionFilter_Combat:
+        return "All Combat stats";
+    case StatsSectionFilter_WeaponSkills:
+        return "All Weapon Skills stats";
+    case StatsSectionFilter_Labor:
+        return "All Labor stats";
+    case StatsSectionFilter_All:
+    default:
+        break;
+    }
+
+    return "All stats";
+}
+
+bool IsStatsSectionBatchSelectionActive(StatsSectionFilter* sectionOut)
+{
+    if (sectionOut)
+    {
+        *sectionOut = StatsSectionFilter_All;
+    }
+
+    if (!g_statsResultsList)
+    {
+        return false;
+    }
+
+    const size_t selectedIndex = g_statsResultsList->getIndexSelected();
+    if (selectedIndex >= g_filteredStatsRegistryIndexes.size())
+    {
+        return false;
+    }
+
+    if (g_filteredStatsRegistryIndexes[selectedIndex] != -1 || g_activeStatsSectionFilter == StatsSectionFilter_All)
+    {
+        return false;
+    }
+
+    if (sectionOut)
+    {
+        *sectionOut = g_activeStatsSectionFilter;
+    }
+    return true;
+}
+
+size_t CountStatsForSectionFilter(StatsSectionFilter section)
+{
+    size_t count = 0u;
+    for (size_t index = 0; index < GetStatsRegistryCount(); ++index)
+    {
+        if (DoesStatsEntryMatchSectionFilter(kStatsRegistry[index], section))
+        {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+void CollectStatsEntriesForSectionFilter(StatsSectionFilter section, std::vector<const StatsRegistryEntry*>* outEntries)
+{
+    if (!outEntries)
+    {
+        return;
+    }
+
+    outEntries->clear();
+    if (section == StatsSectionFilter_All)
+    {
+        return;
+    }
+
+    for (size_t index = 0; index < GetStatsRegistryCount(); ++index)
+    {
+        if (DoesStatsEntryMatchSectionFilter(kStatsRegistry[index], section))
+        {
+            outEntries->push_back(&kStatsRegistry[index]);
+        }
+    }
 }
 
 bool TryResolveSelectedStatsEntry(const StatsRegistryEntry** entryOut)
@@ -3880,7 +4157,15 @@ bool TryResolveSelectedStatsEntry(const StatsRegistryEntry** entryOut)
         const size_t selectedIndex = g_statsResultsList->getIndexSelected();
         if (selectedIndex < g_filteredStatsRegistryIndexes.size())
         {
-            selectedStat = kStatsRegistry[g_filteredStatsRegistryIndexes[selectedIndex]].stat;
+            const int registryIndex = g_filteredStatsRegistryIndexes[selectedIndex];
+            if (registryIndex >= 0 && static_cast<size_t>(registryIndex) < GetStatsRegistryCount())
+            {
+                selectedStat = kStatsRegistry[registryIndex].stat;
+            }
+            else
+            {
+                selectedStat = STAT_NONE;
+            }
         }
     }
 
@@ -3995,10 +4280,11 @@ void RefreshStatsActionButtons(PlayerInterface* player)
 
     const StatsRegistryEntry* entry = 0;
     const bool hasSelectedStat = TryResolveSelectedStatsEntry(&entry) && entry != 0;
+    const bool hasSectionBatchTarget = IsStatsSectionBatchSelectionActive(0);
     int inputValue = 0;
     const bool hasValidInput =
         g_statsInputEdit && TryParseNonNegativeInt(TrimAscii(g_statsInputEdit->getOnlyText().asUTF8()), &inputValue);
-    const bool setEnabled = hasTargets && hasSelectedStat && hasValidInput;
+    const bool setEnabled = hasTargets && (hasSelectedStat || hasSectionBatchTarget) && hasValidInput;
     const bool deltaEnabled = setEnabled && inputValue > 0;
 
     if (g_statsSetButton)
@@ -4036,6 +4322,51 @@ void RefreshStatsUi(PlayerInterface* player)
         {
             g_statsScopeText->setCaption("Scope: Current selected character");
         }
+    }
+
+    StatsSectionFilter batchSection = StatsSectionFilter_All;
+    if (IsStatsSectionBatchSelectionActive(&batchSection))
+    {
+        if (g_statsSelectedSummaryText)
+        {
+            g_statsSelectedSummaryText->setCaption(
+                std::string("Selected: ") + BuildStatsSectionAllListLabel(batchSection) + " (section batch)");
+        }
+        if (g_statsCurrentValueText)
+        {
+            std::stringstream caption;
+            caption << "Current: Applies to " << CountStatsForSectionFilter(batchSection)
+                    << " stats per selected character";
+            if (g_statsApplyToAllSelected && selectedCount > 1)
+            {
+                caption << " | " << selectedCount << " selected";
+            }
+            g_statsCurrentValueText->setCaption(caption.str());
+        }
+        if (g_statsInputLabelText)
+        {
+            g_statsInputLabelText->setCaption("Value / Delta (0-100, section batch)");
+        }
+        if (g_statsPreviewText)
+        {
+            int inputValue = 0;
+            if (!g_statsInputEdit
+                || !TryParseNonNegativeInt(TrimAscii(g_statsInputEdit->getOnlyText().asUTF8()), &inputValue))
+            {
+                g_statsPreviewText->setCaption("Preview: Enter a non-negative value");
+            }
+            else
+            {
+                std::stringstream preview;
+                preview << "Preview: Set " << BuildStatsSectionAllListLabel(batchSection)
+                        << " to " << ClampIntValue(inputValue, kStatsSafeValueMin, kStatsSafeValueMax)
+                        << " | Add " << inputValue << " to each"
+                        << " | Subtract " << inputValue << " from each";
+                g_statsPreviewText->setCaption(preview.str());
+            }
+        }
+        RefreshStatsActionButtons(player);
+        return;
     }
 
     const StatsRegistryEntry* entry = 0;
@@ -4136,6 +4467,8 @@ void RefreshStatsUi(PlayerInterface* player)
 
 void RefreshStatsList()
 {
+    UpdateStatsSectionButtonCaptions();
+
     if (!g_statsResultsList)
     {
         g_filteredStatsRegistryIndexes.clear();
@@ -4156,27 +4489,45 @@ void RefreshStatsList()
     {
         searchUpper = ToUpperAscii(TrimAscii(g_statsSearchEdit->getOnlyText().asUTF8()));
     }
+    const bool showSectionBatchEntry =
+        searchUpper.empty() && g_activeStatsSectionFilter != StatsSectionFilter_All;
+    const bool includeGroupingHint =
+        g_activeStatsSectionFilter == StatsSectionFilter_All
+        || g_activeStatsSectionFilter == StatsSectionFilter_CommonTest;
+    size_t matchingStatCount = 0u;
+
+    if (showSectionBatchEntry)
+    {
+        g_filteredStatsRegistryIndexes.push_back(-1);
+        g_statsResultsList->addItem(BuildStatsSectionAllListLabel(g_activeStatsSectionFilter));
+    }
 
     for (size_t index = 0; index < GetStatsRegistryCount(); ++index)
     {
         const StatsRegistryEntry& entry = kStatsRegistry[index];
+        if (!DoesStatsEntryMatchSectionFilter(entry, g_activeStatsSectionFilter))
+        {
+            continue;
+        }
         if (!DoesStatsEntryMatchSearch(entry, searchUpper))
         {
             continue;
         }
 
-        g_filteredStatsRegistryIndexes.push_back(index);
-        g_statsResultsList->addItem(BuildStatsListLabel(entry));
+        g_filteredStatsRegistryIndexes.push_back(static_cast<int>(index));
+        g_statsResultsList->addItem(BuildStatsSectionedListLabel(entry, includeGroupingHint));
+        ++matchingStatCount;
     }
 
     if (g_statsResultCountText)
     {
         std::stringstream caption;
-        caption << g_filteredStatsRegistryIndexes.size() << " stats";
+        caption << GetStatsSectionFilterLabel(g_activeStatsSectionFilter)
+                << ": " << matchingStatCount << " stats";
         g_statsResultCountText->setCaption(caption.str());
     }
 
-    if (g_filteredStatsRegistryIndexes.empty())
+    if (matchingStatCount == 0u)
     {
         g_statsResultsList->addItem("No matching stats");
         g_statsResultsList->clearIndexSelected();
@@ -4186,17 +4537,28 @@ void RefreshStatsList()
         return;
     }
 
-    size_t nextSelectedIndex = 0u;
+    size_t nextSelectedIndex = showSectionBatchEntry ? 1u : 0u;
+    if (nextSelectedIndex >= g_filteredStatsRegistryIndexes.size())
+    {
+        nextSelectedIndex = 0u;
+    }
     for (size_t filteredIndex = 0; filteredIndex < g_filteredStatsRegistryIndexes.size(); ++filteredIndex)
     {
-        if (kStatsRegistry[g_filteredStatsRegistryIndexes[filteredIndex]].stat == previouslySelectedStat)
+        const int registryIndex = g_filteredStatsRegistryIndexes[filteredIndex];
+        if (registryIndex >= 0
+            && static_cast<size_t>(registryIndex) < GetStatsRegistryCount()
+            && kStatsRegistry[registryIndex].stat == previouslySelectedStat)
         {
             nextSelectedIndex = filteredIndex;
             break;
         }
     }
 
-    g_selectedStatsStat = kStatsRegistry[g_filteredStatsRegistryIndexes[nextSelectedIndex]].stat;
+    const int selectedRegistryIndex = g_filteredStatsRegistryIndexes[nextSelectedIndex];
+    g_selectedStatsStat =
+        (selectedRegistryIndex >= 0 && static_cast<size_t>(selectedRegistryIndex) < GetStatsRegistryCount())
+            ? kStatsRegistry[selectedRegistryIndex].stat
+            : STAT_NONE;
     g_statsResultsList->setIndexSelected(nextSelectedIndex);
     g_statsResultsList->beginToItemAt(nextSelectedIndex);
     RefreshStatsUi(g_lastPlayerInterface);
@@ -5857,6 +6219,14 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_statsSectionText, statsVisible);
     SetWidgetVisible(g_statsScopeText, statsVisible);
     SetWidgetVisible(g_statsApplyToAllButton, statsVisible);
+    SetWidgetVisible(g_statsSectionFilterText, statsVisible);
+    SetWidgetVisible(g_statsAllSectionButton, statsVisible);
+    SetWidgetVisible(g_statsCommonSectionButton, statsVisible);
+    SetWidgetVisible(g_statsCoreSectionButton, statsVisible);
+    SetWidgetVisible(g_statsUtilitySectionButton, statsVisible);
+    SetWidgetVisible(g_statsCombatSectionButton, statsVisible);
+    SetWidgetVisible(g_statsWeaponsSectionButton, statsVisible);
+    SetWidgetVisible(g_statsLaborSectionButton, statsVisible);
     SetWidgetVisible(g_statsSearchLabelText, statsVisible);
     SetWidgetVisible(g_statsSearchEdit, statsVisible);
     SetWidgetVisible(g_statsResultCountText, statsVisible);
@@ -6035,6 +6405,11 @@ int ClampIntValue(int value, int minValue, int maxValue)
     return value;
 }
 
+int ClampPanelWidthValue(int value)
+{
+    return ClampIntValue(value, kPanelWidthLowerBound, kPanelWidthUpperBound);
+}
+
 int ClampPanelHeightSettingValue(int value)
 {
     return ClampIntValue(value, kPanelExpandedHeightLowerBound, kPanelExpandedHeightUpperBound);
@@ -6118,7 +6493,7 @@ int GetActivePanelContentBottomInBodyCoords()
     case PanelTab_Stats:
         return GetWidgetBottom(
             g_statsPreviewText,
-            GetWidgetBottom(g_statsSubtractButton, 654 - bodyTop));
+            GetWidgetBottom(g_statsSubtractButton, 694 - bodyTop));
     case PanelTab_Teleport:
         return GetSavedLocationsContentBottomInBodyCoords();
     case PanelTab_Inventory:
@@ -6572,6 +6947,14 @@ void ResetPanelWidgetPointers()
     g_statsSectionText = 0;
     g_statsScopeText = 0;
     g_statsApplyToAllButton = 0;
+    g_statsSectionFilterText = 0;
+    g_statsAllSectionButton = 0;
+    g_statsCommonSectionButton = 0;
+    g_statsCoreSectionButton = 0;
+    g_statsUtilitySectionButton = 0;
+    g_statsCombatSectionButton = 0;
+    g_statsWeaponsSectionButton = 0;
+    g_statsLaborSectionButton = 0;
     g_statsSearchLabelText = 0;
     g_statsSearchEdit = 0;
     g_statsResultCountText = 0;
@@ -6638,6 +7021,7 @@ void ResetPanelWidgetPointers()
     g_filteredStatsRegistryIndexes.clear();
     g_selectedStatsStat = STAT_NONE;
     g_statsApplyToAllSelected = false;
+    g_activeStatsSectionFilter = StatsSectionFilter_All;
     g_filteredSavedLocationIndexes.clear();
     g_savedLocationRenameId.clear();
     g_savedLocationSearchText.clear();
@@ -6732,6 +7116,7 @@ void LoadConfig()
     g_confirmDangerousActions = true;
     g_panelHidden = false;
     g_panelCollapsed = false;
+    kPanelWidth = kPanelWidthDefault;
     g_panelMinExpandedHeight = kPanelMinExpandedHeightDefault;
     g_panelMaxExpandedHeight = kPanelExpandedHeight;
     g_panelHeaderTitleFontHeight = kPanelHeaderTitleFontHeightDefault;
@@ -6793,6 +7178,10 @@ void LoadConfig()
     if (TryParseJsonBoolByKey(configText, "confirm_dangerous_actions", &parsedBool))
     {
         g_confirmDangerousActions = parsedBool;
+    }
+    if (TryParseJsonIntByKey(configText, "panel_width", &parsedInt))
+    {
+        kPanelWidth = parsedInt;
     }
     if (TryParseJsonIntByKey(configText, "panel_min_expanded_height", &parsedInt))
     {
@@ -6866,6 +7255,7 @@ void LoadConfig()
         }
     }
 
+    kPanelWidth = ClampPanelWidthValue(kPanelWidth);
     NormalizePanelHeightSettings();
     NormalizePanelVisualSettings();
     RefreshHotkeyBinding();
@@ -6878,6 +7268,7 @@ void LoadConfig()
          << " start_hidden=" << (g_panelHidden ? "true" : "false")
          << " start_collapsed=" << (g_panelCollapsed ? "true" : "false")
          << " confirm_dangerous_actions=" << (g_confirmDangerousActions ? "true" : "false")
+         << " panel_width=" << kPanelWidth
          << " min_height=" << g_panelMinExpandedHeight
          << " max_height=" << g_panelMaxExpandedHeight
          << " title_font_height=" << g_panelHeaderTitleFontHeight
@@ -7101,6 +7492,89 @@ EMC_Result __cdecl SetTogglePanelRequireAlt(void*, int32_t value, char* errBuf, 
     return EMC_OK;
 }
 
+void RebuildPanelForWidthChange()
+{
+    if (!g_panel)
+    {
+        return;
+    }
+
+    DestroyPanel();
+    CreatePanelWidgets();
+}
+
+EMC_Result __cdecl GetPluginEnabled(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_pluginEnabled ? 1 : 0;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetPluginEnabled(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    if (value != 0 && value != 1)
+    {
+        CopyModHubErrorMessage(errBuf, errBufSize, "value_must_be_bool");
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    const bool previousValue = g_pluginEnabled;
+    g_pluginEnabled = value != 0;
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_pluginEnabled = previousValue;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    if (!g_pluginEnabled && g_panel)
+    {
+        DestroyPanel();
+    }
+    else if (g_pluginEnabled && !g_panel && g_lastPlayerInterface)
+    {
+        CreatePanelWidgets();
+    }
+
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetPanelWidth(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = kPanelWidth;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetPanelWidth(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    const int previousValue = kPanelWidth;
+    kPanelWidth = ClampPanelWidthValue(value);
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        kPanelWidth = previousValue;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    RebuildPanelForWidthChange();
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
 EMC_Result __cdecl GetPanelMinExpandedHeight(void*, int32_t* outValue)
 {
     if (!outValue)
@@ -7306,6 +7780,15 @@ const EMC_KeybindSettingDefV1 kModHubTogglePanelKeySetting = {
     &SetTogglePanelHotkeyKeybind
 };
 
+const EMC_BoolSettingDefV1 kModHubEnabledSetting = {
+    "enabled",
+    kModHubEnabledLabel,
+    kModHubEnabledDescription,
+    0,
+    &GetPluginEnabled,
+    &SetPluginEnabled
+};
+
 const EMC_BoolSettingDefV1 kModHubTogglePanelCtrlSetting = {
     "toggle_panel_ctrl",
     kModHubTogglePanelCtrlLabel,
@@ -7331,6 +7814,20 @@ const EMC_BoolSettingDefV1 kModHubTogglePanelAltSetting = {
     0,
     &GetTogglePanelRequireAlt,
     &SetTogglePanelRequireAlt
+};
+
+const EMC_IntSettingDefV2 kModHubPanelWidthSetting = {
+    "panel_width",
+    kModHubPanelWidthLabel,
+    kModHubPanelWidthDescription,
+    0,
+    kPanelWidthLowerBound,
+    kPanelWidthUpperBound,
+    10,
+    { 40, 20, 10 },
+    { 10, 20, 40 },
+    &GetPanelWidth,
+    &SetPanelWidth
 };
 
 const EMC_IntSettingDefV2 kModHubPanelMinHeightSetting = {
@@ -7418,19 +7915,23 @@ const EMC_IntSettingDefV2 kModHubPanelBodyOverlapSetting = {
 };
 
 const emc::ModHubClientSettingRowV1 kModHubBaseRows[] = {
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubEnabledSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_KEYBIND, &kModHubTogglePanelKeySetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelCtrlSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelShiftSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelWidthSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMinHeightSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMaxHeightSetting }
 };
 
 const emc::ModHubClientSettingRowV1 kModHubDeveloperRows[] = {
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubEnabledSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_KEYBIND, &kModHubTogglePanelKeySetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelCtrlSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelShiftSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelWidthSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMinHeightSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMaxHeightSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelHeaderTitleFontHeightSetting },
@@ -11851,6 +12352,20 @@ const char* StatsEditOperationToActionId(StatsEditOperation operation)
     }
 }
 
+const char* StatsSectionEditOperationToActionId(StatsEditOperation operation)
+{
+    switch (operation)
+    {
+    case StatsEditOperation_Add:
+        return "add_stat_section";
+    case StatsEditOperation_Subtract:
+        return "subtract_stat_section";
+    case StatsEditOperation_Set:
+    default:
+        return "set_stat_section";
+    }
+}
+
 const char* StatsEditOperationToStatusVerb(StatsEditOperation operation)
 {
     switch (operation)
@@ -11949,7 +12464,11 @@ bool TryApplyStatsEditToCharacter(
 
 void ApplyStatsEditOperation(StatsEditOperation operation)
 {
-    const char* actionId = StatsEditOperationToActionId(operation);
+    StatsSectionFilter batchSection = StatsSectionFilter_All;
+    const bool sectionBatch = IsStatsSectionBatchSelectionActive(&batchSection);
+    const char* actionId = sectionBatch
+        ? StatsSectionEditOperationToActionId(operation)
+        : StatsEditOperationToActionId(operation);
     LogActionRequested(actionId);
 
     if (!g_lastPlayerInterface)
@@ -11962,7 +12481,7 @@ void ApplyStatsEditOperation(StatsEditOperation operation)
     }
 
     const StatsRegistryEntry* entry = 0;
-    if (!TryResolveSelectedStatsEntry(&entry) || !entry)
+    if (!sectionBatch && (!TryResolveSelectedStatsEntry(&entry) || !entry))
     {
         std::stringstream result;
         result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_stat_selected\"";
@@ -11970,14 +12489,17 @@ void ApplyStatsEditOperation(StatsEditOperation operation)
         SetStatusMessage("Stats edit failed - select a stat");
         return;
     }
+    const std::string selectionLabel = sectionBatch
+        ? BuildStatsSectionAllListLabel(batchSection)
+        : (entry ? entry->label : "stat");
 
     if (!g_statsInputEdit)
     {
         std::stringstream result;
         result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"missing_input_widget\""
-               << " stat=\"" << SanitizeLogValue(entry->label) << "\"";
+               << " target=\"" << SanitizeLogValue(selectionLabel) << "\"";
         LogInfoLine(result.str());
-        SetStatusMessage(std::string(entry->label) + " edit failed - input unavailable");
+        SetStatusMessage(selectionLabel + " edit failed - input unavailable");
         return;
     }
 
@@ -11988,11 +12510,11 @@ void ApplyStatsEditOperation(StatsEditOperation operation)
     {
         std::stringstream result;
         result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"invalid_value\""
-               << " stat=\"" << SanitizeLogValue(entry->label) << "\""
+               << " target=\"" << SanitizeLogValue(selectionLabel) << "\""
                << " value_text=\"" << SanitizeLogValue(inputText) << "\"";
         LogInfoLine(result.str());
         SetStatusMessage(
-            std::string(entry->label)
+            selectionLabel
             + (operation == StatsEditOperation_Set
                     ? " edit failed - enter a value from 0 to 100"
                     : " edit failed - enter a positive value"));
@@ -12006,7 +12528,7 @@ void ApplyStatsEditOperation(StatsEditOperation operation)
     {
         std::stringstream result;
         result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_selected_character\""
-               << " stat=\"" << SanitizeLogValue(entry->label) << "\"";
+               << " target=\"" << SanitizeLogValue(selectionLabel) << "\"";
         LogInfoLine(result.str());
         SetStatusMessage("Stats edit failed - select a character");
         return;
@@ -12014,6 +12536,128 @@ void ApplyStatsEditOperation(StatsEditOperation operation)
 
     const Character* primaryTarget = TryGetPrimarySelectedCharacter(g_lastPlayerInterface);
     const std::string primaryName = primaryTarget ? SafeCharacterName(const_cast<Character*>(primaryTarget)) : "";
+
+    if (sectionBatch)
+    {
+        std::vector<const StatsRegistryEntry*> sectionEntries;
+        CollectStatsEntriesForSectionFilter(batchSection, &sectionEntries);
+        if (sectionEntries.empty())
+        {
+            std::stringstream result;
+            result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"empty_section\""
+                   << " section=\"" << SanitizeLogValue(GetStatsSectionFilterLabel(batchSection)) << "\"";
+            LogInfoLine(result.str());
+            SetStatusMessage(selectionLabel + " edit failed - section is empty");
+            return;
+        }
+
+        int appliedCharacterCount = 0;
+        int appliedStatEditCount = 0;
+        bool anyClamped = false;
+
+        for (size_t targetIndex = 0; targetIndex < targets.size(); ++targetIndex)
+        {
+            int appliedToCharacter = 0;
+            for (size_t entryIndex = 0; entryIndex < sectionEntries.size(); ++entryIndex)
+            {
+                int beforeValue = 0;
+                int afterValue = 0;
+                bool clamped = false;
+                if (!TryApplyStatsEditToCharacter(
+                        targets[targetIndex],
+                        *sectionEntries[entryIndex],
+                        operation,
+                        inputValue,
+                        &beforeValue,
+                        &afterValue,
+                        &clamped))
+                {
+                    continue;
+                }
+
+                ++appliedStatEditCount;
+                ++appliedToCharacter;
+                if (clamped)
+                {
+                    anyClamped = true;
+                }
+            }
+
+            if (appliedToCharacter > 0)
+            {
+                ++appliedCharacterCount;
+            }
+        }
+
+        const bool success = appliedStatEditCount > 0;
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success="
+               << (success ? "true" : "false")
+               << " section=\"" << SanitizeLogValue(GetStatsSectionFilterLabel(batchSection)) << "\""
+               << " requested_value=" << inputValue
+               << " apply_to_all_selected=" << (g_statsApplyToAllSelected ? "true" : "false")
+               << " target_count=" << targets.size()
+               << " applied_character_count=" << appliedCharacterCount
+               << " applied_stat_edit_count=" << appliedStatEditCount
+               << " section_stat_count=" << sectionEntries.size()
+               << " clamped=" << (anyClamped ? "true" : "false");
+        if (!success)
+        {
+            result << " reason=\"apply_failed\"";
+        }
+        LogInfoLine(result.str());
+
+        RefreshStatsUi(g_lastPlayerInterface);
+
+        if (!success)
+        {
+            SetStatusMessage(selectionLabel + " edit failed - stat path unavailable");
+            return;
+        }
+
+        std::stringstream status;
+        if (operation == StatsEditOperation_Set)
+        {
+            const int setValue = ClampIntValue(inputValue, kStatsSafeValueMin, kStatsSafeValueMax);
+            if (appliedCharacterCount == 1 && !primaryName.empty())
+            {
+                status << "Set " << selectionLabel << " to " << setValue << " for " << primaryName;
+            }
+            else if (appliedCharacterCount == static_cast<int>(targets.size()))
+            {
+                status << "Set " << selectionLabel << " for " << appliedCharacterCount << " selected character(s)";
+            }
+            else
+            {
+                status << "Set " << selectionLabel << " for " << appliedCharacterCount << " of " << targets.size()
+                       << " selected character(s)";
+            }
+        }
+        else
+        {
+            status << StatsEditOperationToStatusVerb(operation) << ' ' << inputValue << ' ';
+            status << StatsEditOperationToStatusPreposition(operation) << " each of " << selectionLabel << ' ';
+            if (appliedCharacterCount == 1 && !primaryName.empty())
+            {
+                status << primaryName;
+            }
+            else if (appliedCharacterCount == static_cast<int>(targets.size()))
+            {
+                status << appliedCharacterCount << " selected character(s)";
+            }
+            else
+            {
+                status << appliedCharacterCount << " of " << targets.size() << " selected character(s)";
+            }
+        }
+
+        if (anyClamped)
+        {
+            status << " (clamped)";
+        }
+        SetStatusMessage(status.str());
+        return;
+    }
 
     int appliedCount = 0;
     int primaryBeforeValue = 0;
@@ -12056,7 +12700,7 @@ void ApplyStatsEditOperation(StatsEditOperation operation)
     std::stringstream result;
     result << "event=testkit_action_result action=\"" << actionId << "\" success="
            << (success ? "true" : "false")
-           << " stat=\"" << SanitizeLogValue(entry->label) << "\""
+           << " stat=\"" << SanitizeLogValue(selectionLabel) << "\""
            << " requested_value=" << inputValue
            << " apply_to_all_selected=" << (g_statsApplyToAllSelected ? "true" : "false")
            << " target_count=" << targets.size()
@@ -12077,7 +12721,7 @@ void ApplyStatsEditOperation(StatsEditOperation operation)
 
     if (!success)
     {
-        SetStatusMessage(std::string(entry->label) + " edit failed - stat path unavailable");
+        SetStatusMessage(selectionLabel + " edit failed - stat path unavailable");
         return;
     }
 
@@ -12086,22 +12730,22 @@ void ApplyStatsEditOperation(StatsEditOperation operation)
     {
         if (appliedCount == 1 && !primaryName.empty())
         {
-            status << "Set " << entry->label << " to " << (primaryObserved ? primaryAfterValue : inputValue)
+            status << "Set " << selectionLabel << " to " << (primaryObserved ? primaryAfterValue : inputValue)
                    << " for " << primaryName;
         }
         else if (appliedCount == static_cast<int>(targets.size()))
         {
-            status << "Set " << entry->label << " for " << appliedCount << " selected character(s)";
+            status << "Set " << selectionLabel << " for " << appliedCount << " selected character(s)";
         }
         else
         {
-            status << "Set " << entry->label << " for " << appliedCount << " of " << targets.size()
+            status << "Set " << selectionLabel << " for " << appliedCount << " of " << targets.size()
                    << " selected character(s)";
         }
     }
     else
     {
-        status << StatsEditOperationToStatusVerb(operation) << ' ' << inputValue << ' ' << entry->label << ' ';
+        status << StatsEditOperationToStatusVerb(operation) << ' ' << inputValue << ' ' << selectionLabel << ' ';
         status << StatsEditOperationToStatusPreposition(operation) << ' ';
         if (appliedCount == 1 && !primaryName.empty())
         {
@@ -12137,7 +12781,11 @@ void OnStatsResultsSelectionChanged(MyGUI::ListBox*, size_t index)
     }
     else
     {
-        g_selectedStatsStat = kStatsRegistry[g_filteredStatsRegistryIndexes[index]].stat;
+        const int registryIndex = g_filteredStatsRegistryIndexes[index];
+        g_selectedStatsStat =
+            (registryIndex >= 0 && static_cast<size_t>(registryIndex) < GetStatsRegistryCount())
+                ? kStatsRegistry[registryIndex].stat
+                : STAT_NONE;
     }
 
     RefreshStatsUi(g_lastPlayerInterface);
@@ -12176,6 +12824,64 @@ void OnStatsApplyToAllButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton
     {
         inputManager->resetMouseCaptureWidget();
     }
+}
+
+void SetActiveStatsSectionFilter(StatsSectionFilter section)
+{
+    g_activeStatsSectionFilter = section;
+    RefreshStatsList();
+    RefreshStatsUi(g_lastPlayerInterface);
+}
+
+void HandleStatsSectionButtonPressed(MyGUI::MouseButton id, StatsSectionFilter section)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    SetActiveStatsSectionFilter(section);
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnStatsAllSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    HandleStatsSectionButtonPressed(id, StatsSectionFilter_All);
+}
+
+void OnStatsCommonSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    HandleStatsSectionButtonPressed(id, StatsSectionFilter_CommonTest);
+}
+
+void OnStatsCoreSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    HandleStatsSectionButtonPressed(id, StatsSectionFilter_Core);
+}
+
+void OnStatsUtilitySectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    HandleStatsSectionButtonPressed(id, StatsSectionFilter_MovementUtility);
+}
+
+void OnStatsCombatSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    HandleStatsSectionButtonPressed(id, StatsSectionFilter_Combat);
+}
+
+void OnStatsWeaponsSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    HandleStatsSectionButtonPressed(id, StatsSectionFilter_WeaponSkills);
+}
+
+void OnStatsLaborSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    HandleStatsSectionButtonPressed(id, StatsSectionFilter_Labor);
 }
 
 void OnStatsSetButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
@@ -14010,6 +14716,14 @@ bool HasAllPanelWidgets()
         && g_statsSectionText
         && g_statsScopeText
         && g_statsApplyToAllButton
+        && g_statsSectionFilterText
+        && g_statsAllSectionButton
+        && g_statsCommonSectionButton
+        && g_statsCoreSectionButton
+        && g_statsUtilitySectionButton
+        && g_statsCombatSectionButton
+        && g_statsWeaponsSectionButton
+        && g_statsLaborSectionButton
         && g_statsSearchLabelText
         && g_statsSearchEdit
         && g_statsResultCountText
@@ -14110,6 +14824,7 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_limbDamageSectionText);
     ConfigureTextWidget(g_statsSectionText);
     ConfigureTextWidget(g_statsScopeText);
+    ConfigureTextWidget(g_statsSectionFilterText);
     ConfigureTextWidget(g_statsSearchLabelText);
     ConfigureTextWidget(g_statsResultCountText);
     ConfigureTextWidget(g_statsSelectedSummaryText);
@@ -14177,6 +14892,7 @@ void InitializePanelWidgets()
     g_limbDamageSectionText->setCaption("Limb Damage");
     g_statsSectionText->setCaption("Stats");
     g_statsScopeText->setCaption("Scope: No selected character");
+    g_statsSectionFilterText->setCaption("Sections");
     g_statsSearchLabelText->setCaption("Search");
     g_statsResultCountText->setCaption("0 stats");
     g_statsSelectedSummaryText->setCaption("Selected: None");
@@ -14218,6 +14934,7 @@ void InitializePanelWidgets()
     g_damageLeftLegButton->setCaption("Damage Left Leg");
     g_damageRightLegButton->setCaption("Damage Right Leg");
     g_statsApplyToAllButton->setCaption("Apply To All Selected: Off");
+    UpdateStatsSectionButtonCaptions();
     g_statsSearchEdit->setEditStatic(false);
     g_statsSearchEdit->setMaxTextLength(48);
     g_statsSearchEdit->setOnlyText("");
@@ -14325,6 +15042,13 @@ void InitializePanelWidgets()
     g_damageLeftLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftLegButtonPressed);
     g_damageRightLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightLegButtonPressed);
     g_statsApplyToAllButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsApplyToAllButtonPressed);
+    g_statsAllSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsAllSectionButtonPressed);
+    g_statsCommonSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsCommonSectionButtonPressed);
+    g_statsCoreSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsCoreSectionButtonPressed);
+    g_statsUtilitySectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsUtilitySectionButtonPressed);
+    g_statsCombatSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsCombatSectionButtonPressed);
+    g_statsWeaponsSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsWeaponsSectionButtonPressed);
+    g_statsLaborSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsLaborSectionButtonPressed);
     g_statsSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnStatsSearchTextChanged);
     g_statsResultsList->eventListChangePosition += MyGUI::newDelegate(&OnStatsResultsSelectionChanged);
     g_statsInputEdit->eventEditTextChange += MyGUI::newDelegate(&OnStatsInputTextChanged);
@@ -14557,53 +15281,85 @@ void CreatePanelWidgets()
         "Kenshi_Button1",
         BuildBodyCoord(20, 254, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
-    g_statsSearchLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+    g_statsSectionFilterText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
         BuildBodyCoord(20, 288, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
+    g_statsAllSectionButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 310, 70, 28),
+        MyGUI::Align::Default);
+    g_statsCommonSectionButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(96, 310, 78, 28),
+        MyGUI::Align::Default);
+    g_statsCoreSectionButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(180, 310, 70, 28),
+        MyGUI::Align::Default);
+    g_statsUtilitySectionButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(256, 310, 84, 28),
+        MyGUI::Align::Default);
+    g_statsCombatSectionButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 344, 94, 28),
+        MyGUI::Align::Default);
+    g_statsWeaponsSectionButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(120, 344, 96, 28),
+        MyGUI::Align::Default);
+    g_statsLaborSectionButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(222, 344, 118, 28),
+        MyGUI::Align::Default);
+    g_statsSearchLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 378, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
     g_statsSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 310, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 400, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_statsResultCountText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 344, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 434, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        BuildBodyCoord(20, 366, kPanelWidth - 40, 154),
+        BuildBodyCoord(20, 456, kPanelWidth - 40, 114),
         MyGUI::Align::Default);
     g_statsSelectedSummaryText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 526, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 576, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsCurrentValueText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 548, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 598, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsInputLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 570, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 620, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsInputEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 592, 96, 28),
+        BuildBodyCoord(20, 642, 96, 28),
         MyGUI::Align::Default);
     g_statsSetButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(124, 592, 64, 28),
+        BuildBodyCoord(124, 642, 64, 28),
         MyGUI::Align::Default);
     g_statsAddButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(196, 592, 64, 28),
+        BuildBodyCoord(196, 642, 64, 28),
         MyGUI::Align::Default);
     g_statsSubtractButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(268, 592, 72, 28),
+        BuildBodyCoord(268, 642, 72, 28),
         MyGUI::Align::Default);
     g_statsPreviewText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 626, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 676, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_teleportSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
@@ -14872,8 +15628,18 @@ void PlayerInterface_updateUT_hook(PlayerInterface* thisptr)
 {
     PlayerInterface_updateUT_orig(thisptr);
 
-    TickPendingDownedTeleportRestores();
     TickModHubAttachRetry();
+
+    if (!g_pluginEnabled)
+    {
+        if (g_panel)
+        {
+            DestroyPanel();
+        }
+        return;
+    }
+
+    TickPendingDownedTeleportRestores();
     TickPanelToggleHotkey();
     EnsurePanel(thisptr);
     TickInventorySearchFocusHotkey();
@@ -14921,8 +15687,7 @@ __declspec(dllexport) void startPlugin()
     StartModHubClient();
     if (!g_pluginEnabled)
     {
-        LogInfoLine("plugin disabled by config");
-        return;
+        LogInfoLine("plugin disabled by config; hooks remain loaded for runtime re-enable");
     }
 
     if (KenshiLib::SUCCESS != KenshiLib::AddHook(
