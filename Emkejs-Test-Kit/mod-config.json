@@ -8,5 +8,252 @@
   "start_collapsed": false,
   "logging_level": "info",
   "confirm_dangerous_actions": true,
-  "saved_locations": []
+  "panel_width": 370,
+  "panel_min_expanded_height": 320,
+  "panel_max_expanded_height": 710,
+  "saved_locations": [
+    {
+      "id": "saved_location_10",
+      "name": "Clownsteady",
+      "x": -61535.5,
+      "y": 146.283,
+      "z": 92441.6,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_1",
+      "name": "Squin",
+      "x": -64021.9,
+      "y": 480.615,
+      "z": 17172.9,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_3",
+      "name": "Admag",
+      "x": -89983.6,
+      "y": 1254.32,
+      "z": 15219.7,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_25",
+      "name": "Bad Teeth",
+      "x": -32933.4,
+      "y": 430.31,
+      "z": -21261.5,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_20",
+      "name": "Bark",
+      "x": 87173.3,
+      "y": 264.338,
+      "z": -108698,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_27",
+      "name": "Black Desert City",
+      "x": 7826.75,
+      "y": 572.028,
+      "z": -13590.9,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_15",
+      "name": "Black Scratch",
+      "x": 83964.4,
+      "y": 1336.72,
+      "z": 4608.82,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_24",
+      "name": "Blister Hill",
+      "x": -37124.1,
+      "y": 674.686,
+      "z": -42087.3,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_14",
+      "name": "Brink",
+      "x": 61145.2,
+      "y": 936.144,
+      "z": 5962,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_8",
+      "name": "Cat-Lonus Exile",
+      "x": 106269,
+      "y": 4161.93,
+      "z": 127407,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_5",
+      "name": "Catun",
+      "x": -8327.54,
+      "y": 569.427,
+      "z": 81691.9,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_9",
+      "name": "Crab town",
+      "x": 140513,
+      "y": 743.032,
+      "z": 53202.2,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_22",
+      "name": "Deadcat",
+      "x": -62619.4,
+      "y": 515.582,
+      "z": -110869,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_11",
+      "name": "Drifters Last",
+      "x": -79250,
+      "y": 139.373,
+      "z": 114411,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_6",
+      "name": "Fish Isle",
+      "x": -10321.9,
+      "y": 440.182,
+      "z": 122366,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_17",
+      "name": "Heft",
+      "x": 66879.3,
+      "y": 1273.62,
+      "z": -72210.5,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_16",
+      "name": "Heng",
+      "x": 48124.4,
+      "y": 1458.75,
+      "z": -41038.6,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_2",
+      "name": "Hub",
+      "x": -51764.8,
+      "y": 1535.82,
+      "z": 2817.03,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_23",
+      "name": "Mongrel",
+      "x": -83140.8,
+      "y": 1248.9,
+      "z": -39301.6,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_12",
+      "name": "Mourn",
+      "x": 11166.8,
+      "y": 899.156,
+      "z": 65357.5,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_4",
+      "name": "Shark",
+      "x": -48041.9,
+      "y": 138.373,
+      "z": 47277.4,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_19",
+      "name": "Sho-Battai",
+      "x": 53915.8,
+      "y": 1131.11,
+      "z": -93345.6,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_7",
+      "name": "Southern Hive",
+      "x": 32385,
+      "y": 1353.63,
+      "z": 102298,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_26",
+      "name": "Stack",
+      "x": -56545.8,
+      "y": 1019.82,
+      "z": -12989.7,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_18",
+      "name": "Stoat",
+      "x": 35099.5,
+      "y": 1033.32,
+      "z": -70528.1,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_13",
+      "name": "Strange Town",
+      "x": 18648.4,
+      "y": 401.675,
+      "z": 47986.8,
+      "pinned": false,
+      "last_used_utc": 0
+    },
+    {
+      "id": "saved_location_21",
+      "name": "Worlds End",
+      "x": -26124.3,
+      "y": 4829.55,
+      "z": -85712,
+      "pinned": false,
+      "last_used_utc": 0
+    }
+  ]
 }
