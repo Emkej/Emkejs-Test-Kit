@@ -329,6 +329,12 @@ struct StatsRegistryEntry
     int safeMaxValue;
 };
 
+struct StatsClipboardEntry
+{
+    StatsEnumerated stat;
+    int value;
+};
+
 const StatsRegistryEntry kStatsRegistry[] = {
     { STAT_STRENGTH, "Strength", StatsGroup_Core, true, kStatsSafeValueMin, kStatsSafeValueMax },
     { STAT_TOUGHNESS, "Toughness", StatsGroup_Core, true, kStatsSafeValueMin, kStatsSafeValueMax },
@@ -673,6 +679,9 @@ MyGUI::Button* g_damageRightLegButton = 0;
 MyGUI::TextBox* g_statsSectionText = 0;
 MyGUI::TextBox* g_statsScopeText = 0;
 MyGUI::Button* g_statsApplyToAllButton = 0;
+MyGUI::TextBox* g_statsClipboardText = 0;
+MyGUI::Button* g_statsCopyButton = 0;
+MyGUI::Button* g_statsPasteButton = 0;
 MyGUI::TextBox* g_statsSectionFilterText = 0;
 MyGUI::Button* g_statsAllSectionButton = 0;
 MyGUI::Button* g_statsCommonSectionButton = 0;
@@ -748,6 +757,7 @@ MyGUI::TextBox* g_statusText = 0;
 std::vector<InventorySpawnOption> g_inventoryFoodItemOptions;
 std::vector<size_t> g_filteredInventoryFoodItemOptionIndexes;
 std::vector<int> g_filteredStatsRegistryIndexes;
+std::vector<StatsClipboardEntry> g_statsClipboardEntries;
 std::vector<SpawnTemplateOption> g_spawnTemplateOptions;
 std::vector<size_t> g_filteredSpawnTemplateOptionIndexes;
 std::vector<SavedLocation> g_savedLocations;
@@ -758,6 +768,7 @@ std::string g_selectedSavedLocationId;
 StatsEnumerated g_selectedStatsStat = STAT_NONE;
 bool g_statsApplyToAllSelected = false;
 StatsSectionFilter g_activeStatsSectionFilter = StatsSectionFilter_All;
+std::string g_statsClipboardSourceName;
 bool g_savedLocationsCollapsed = false;
 bool g_spawnSelectionSyncInProgress = false;
 bool g_inventoryFoodItemOptionsLoaded = false;
@@ -817,9 +828,19 @@ void OnStatsSearchTextChanged(MyGUI::EditBox*);
 void OnStatsResultsSelectionChanged(MyGUI::ListBox*, size_t);
 void OnStatsInputTextChanged(MyGUI::EditBox*);
 void OnStatsApplyToAllButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsCopyButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+void OnStatsPasteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnStatsSetButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnStatsAddButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnStatsSubtractButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+bool TryApplyStatsEditToCharacter(
+    Character* character,
+    const StatsRegistryEntry& entry,
+    StatsEditOperation operation,
+    int inputValue,
+    int* beforeValueOut,
+    int* afterValueOut,
+    bool* clampedOut);
 void OnInventorySearchResultsSelectionChanged(MyGUI::ListBox*, size_t);
 void OnSpawnResultsSelectionChanged(MyGUI::ListBox*, size_t);
 std::string SafeCharacterName(Character* target);
@@ -4207,6 +4228,163 @@ bool TryReadCharacterStatValue(Character* character, StatsEnumerated stat, int* 
     }
 }
 
+bool HasStatsClipboardData()
+{
+    return !g_statsClipboardEntries.empty();
+}
+
+std::string BuildStatsClipboardSummaryText()
+{
+    if (!HasStatsClipboardData())
+    {
+        return "Clipboard: Empty";
+    }
+
+    std::stringstream summary;
+    summary << "Clipboard: " << g_statsClipboardEntries.size() << " stats";
+    if (!g_statsClipboardSourceName.empty())
+    {
+        summary << " from " << g_statsClipboardSourceName;
+    }
+    return summary.str();
+}
+
+bool TryCopyStatsBlockFromCharacter(
+    Character* character,
+    std::string* sourceNameOut,
+    int* copiedCountOut,
+    int* attemptedCountOut)
+{
+    if (sourceNameOut)
+    {
+        sourceNameOut->clear();
+    }
+    if (copiedCountOut)
+    {
+        *copiedCountOut = 0;
+    }
+    if (attemptedCountOut)
+    {
+        *attemptedCountOut = 0;
+    }
+
+    if (!character)
+    {
+        return false;
+    }
+
+    std::vector<StatsClipboardEntry> copiedEntries;
+    copiedEntries.reserve(GetStatsRegistryCount());
+
+    for (size_t index = 0; index < GetStatsRegistryCount(); ++index)
+    {
+        const StatsRegistryEntry& entry = kStatsRegistry[index];
+        int value = 0;
+        if (attemptedCountOut)
+        {
+            ++(*attemptedCountOut);
+        }
+
+        if (!TryReadCharacterStatValue(character, entry.stat, &value))
+        {
+            continue;
+        }
+
+        StatsClipboardEntry clipboardEntry;
+        clipboardEntry.stat = entry.stat;
+        clipboardEntry.value = value;
+        copiedEntries.push_back(clipboardEntry);
+    }
+
+    if (copiedEntries.empty())
+    {
+        return false;
+    }
+
+    g_statsClipboardEntries.swap(copiedEntries);
+    g_statsClipboardSourceName = SafeCharacterName(character);
+    if (g_statsClipboardSourceName.empty())
+    {
+        g_statsClipboardSourceName = "selected character";
+    }
+
+    if (sourceNameOut)
+    {
+        *sourceNameOut = g_statsClipboardSourceName;
+    }
+    if (copiedCountOut)
+    {
+        *copiedCountOut = static_cast<int>(g_statsClipboardEntries.size());
+    }
+
+    return true;
+}
+
+bool TryApplyStatsClipboardToCharacter(
+    Character* character,
+    int* appliedCountOut,
+    bool* anyClampedOut)
+{
+    if (appliedCountOut)
+    {
+        *appliedCountOut = 0;
+    }
+    if (anyClampedOut)
+    {
+        *anyClampedOut = false;
+    }
+
+    if (!character || g_statsClipboardEntries.empty())
+    {
+        return false;
+    }
+
+    int appliedCount = 0;
+    bool anyClamped = false;
+
+    for (size_t index = 0; index < g_statsClipboardEntries.size(); ++index)
+    {
+        const StatsClipboardEntry& clipboardEntry = g_statsClipboardEntries[index];
+        const StatsRegistryEntry* entry = FindStatsRegistryEntry(clipboardEntry.stat);
+        if (!entry)
+        {
+            continue;
+        }
+
+        int beforeValue = 0;
+        int afterValue = 0;
+        bool clamped = false;
+        if (!TryApplyStatsEditToCharacter(
+                character,
+                *entry,
+                StatsEditOperation_Set,
+                clipboardEntry.value,
+                &beforeValue,
+                &afterValue,
+                &clamped))
+        {
+            continue;
+        }
+
+        ++appliedCount;
+        if (clamped)
+        {
+            anyClamped = true;
+        }
+    }
+
+    if (appliedCountOut)
+    {
+        *appliedCountOut = appliedCount;
+    }
+    if (anyClampedOut)
+    {
+        *anyClampedOut = anyClamped;
+    }
+
+    return appliedCount > 0;
+}
+
 bool AddUniqueStatsTarget(std::vector<Character*>* targets, Character* character)
 {
     if (!targets || !character)
@@ -4284,6 +4462,7 @@ void RefreshStatsActionButtons(PlayerInterface* player)
 
     const bool hasPrimarySelectedCharacter = HasPrimarySelectedCharacter(player);
     const bool hasTargets = g_statsApplyToAllSelected ? (selectedCount > 0) : hasPrimarySelectedCharacter;
+    const bool hasClipboardData = HasStatsClipboardData();
 
     const StatsRegistryEntry* entry = 0;
     const bool hasSelectedStat = TryResolveSelectedStatsEntry(&entry) && entry != 0;
@@ -4306,12 +4485,25 @@ void RefreshStatsActionButtons(PlayerInterface* player)
     {
         g_statsSubtractButton->setEnabled(deltaEnabled);
     }
+    if (g_statsCopyButton)
+    {
+        g_statsCopyButton->setEnabled(hasPrimarySelectedCharacter);
+    }
+    if (g_statsPasteButton)
+    {
+        g_statsPasteButton->setEnabled(selectedCount > 0 && hasClipboardData);
+    }
 }
 
 void RefreshStatsUi(PlayerInterface* player)
 {
     const int selectedCount = GetSelectedCharacterCount(player);
     const bool hasPrimarySelectedCharacter = HasPrimarySelectedCharacter(player);
+
+    if (g_statsClipboardText)
+    {
+        g_statsClipboardText->setCaption(BuildStatsClipboardSummaryText());
+    }
 
     if (g_statsScopeText)
     {
@@ -6226,6 +6418,9 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_statsSectionText, statsVisible);
     SetWidgetVisible(g_statsScopeText, statsVisible);
     SetWidgetVisible(g_statsApplyToAllButton, statsVisible);
+    SetWidgetVisible(g_statsClipboardText, statsVisible);
+    SetWidgetVisible(g_statsCopyButton, statsVisible);
+    SetWidgetVisible(g_statsPasteButton, statsVisible);
     SetWidgetVisible(g_statsSectionFilterText, statsVisible);
     SetWidgetVisible(g_statsAllSectionButton, statsVisible);
     SetWidgetVisible(g_statsCommonSectionButton, statsVisible);
@@ -6500,7 +6695,7 @@ int GetActivePanelContentBottomInBodyCoords()
     case PanelTab_Stats:
         return GetWidgetBottom(
             g_statsPreviewText,
-            GetWidgetBottom(g_statsSubtractButton, 694 - bodyTop));
+            GetWidgetBottom(g_statsSubtractButton, 726 - bodyTop));
     case PanelTab_Teleport:
         return GetSavedLocationsContentBottomInBodyCoords();
     case PanelTab_Inventory:
@@ -6954,6 +7149,9 @@ void ResetPanelWidgetPointers()
     g_statsSectionText = 0;
     g_statsScopeText = 0;
     g_statsApplyToAllButton = 0;
+    g_statsClipboardText = 0;
+    g_statsCopyButton = 0;
+    g_statsPasteButton = 0;
     g_statsSectionFilterText = 0;
     g_statsAllSectionButton = 0;
     g_statsCommonSectionButton = 0;
@@ -12833,6 +13031,192 @@ void OnStatsApplyToAllButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton
     }
 }
 
+void CopyCurrentStatsBlock()
+{
+    const char* actionId = "copy_stats_block";
+    LogActionRequested(actionId);
+
+    if (!g_lastPlayerInterface)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_player_interface\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Copy Stats failed - player interface unavailable");
+        return;
+    }
+
+    Character* sourceCharacter = TryGetPrimarySelectedCharacter(g_lastPlayerInterface);
+    if (!sourceCharacter)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_selected_character\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Copy Stats failed - select a character");
+        return;
+    }
+
+    std::string sourceName;
+    int copiedCount = 0;
+    int attemptedCount = 0;
+    if (!TryCopyStatsBlockFromCharacter(sourceCharacter, &sourceName, &copiedCount, &attemptedCount))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"read_failed\""
+               << " source=\"" << SanitizeLogValue(SafeCharacterName(sourceCharacter)) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Copy Stats failed - stat read path unavailable");
+        RefreshStatsUi(g_lastPlayerInterface);
+        return;
+    }
+
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"" << actionId << "\" success=true"
+           << " source=\"" << SanitizeLogValue(sourceName) << "\""
+           << " copied_count=" << copiedCount
+           << " attempted_count=" << attemptedCount;
+    if (copiedCount < attemptedCount)
+    {
+        result << " partial=true";
+    }
+    LogInfoLine(result.str());
+
+    RefreshStatsUi(g_lastPlayerInterface);
+
+    std::stringstream status;
+    if (copiedCount >= attemptedCount)
+    {
+        status << "Copied " << copiedCount << " stats from " << sourceName;
+    }
+    else
+    {
+        status << "Copied " << copiedCount << " of " << attemptedCount << " stats from " << sourceName;
+    }
+    SetStatusMessage(status.str());
+}
+
+void PasteCopiedStatsBlock()
+{
+    const char* actionId = "paste_stats_block";
+    LogActionRequested(actionId);
+
+    if (!g_lastPlayerInterface)
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_player_interface\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Paste Stats failed - player interface unavailable");
+        return;
+    }
+
+    if (!HasStatsClipboardData())
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"clipboard_empty\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Paste Stats failed - copy stats first");
+        RefreshStatsUi(g_lastPlayerInterface);
+        return;
+    }
+
+    const int selectedCount = GetSelectedCharacterCount(g_lastPlayerInterface);
+    const bool applyToSelectedTargets = selectedCount > 1;
+
+    std::vector<Character*> targets;
+    if (!TryCollectStatsTargets(g_lastPlayerInterface, applyToSelectedTargets, &targets) || targets.empty())
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"" << actionId << "\" success=false reason=\"no_selected_character\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Paste Stats failed - select one or more characters");
+        RefreshStatsUi(g_lastPlayerInterface);
+        return;
+    }
+
+    const Character* primaryTarget = TryGetPrimarySelectedCharacter(g_lastPlayerInterface);
+    const std::string primaryName = primaryTarget ? SafeCharacterName(const_cast<Character*>(primaryTarget)) : "";
+
+    int appliedCharacterCount = 0;
+    int appliedStatEditCount = 0;
+    bool anyClamped = false;
+
+    for (size_t index = 0; index < targets.size(); ++index)
+    {
+        int appliedToCharacter = 0;
+        bool characterClamped = false;
+        if (!TryApplyStatsClipboardToCharacter(targets[index], &appliedToCharacter, &characterClamped))
+        {
+            continue;
+        }
+
+        ++appliedCharacterCount;
+        appliedStatEditCount += appliedToCharacter;
+        if (characterClamped)
+        {
+            anyClamped = true;
+        }
+    }
+
+    const bool success = appliedStatEditCount > 0;
+    std::stringstream result;
+    result << "event=testkit_action_result action=\"" << actionId << "\" success="
+           << (success ? "true" : "false")
+           << " source=\"" << SanitizeLogValue(g_statsClipboardSourceName) << "\""
+           << " copied_stat_count=" << g_statsClipboardEntries.size()
+           << " apply_to_all_selected=" << (applyToSelectedTargets ? "true" : "false")
+           << " target_count=" << targets.size()
+           << " applied_character_count=" << appliedCharacterCount
+           << " applied_stat_edit_count=" << appliedStatEditCount
+           << " clamped=" << (anyClamped ? "true" : "false");
+    if (!success)
+    {
+        result << " reason=\"apply_failed\"";
+    }
+    LogInfoLine(result.str());
+
+    RefreshStatsUi(g_lastPlayerInterface);
+
+    if (!success)
+    {
+        SetStatusMessage("Paste Stats failed - stat apply path unavailable");
+        return;
+    }
+
+    std::stringstream status;
+    if (appliedCharacterCount == 1 && !primaryName.empty())
+    {
+        status << "Pasted " << appliedStatEditCount << " copied stats";
+        if (!g_statsClipboardSourceName.empty())
+        {
+            status << " from " << g_statsClipboardSourceName;
+        }
+        status << " to " << primaryName;
+    }
+    else if (appliedCharacterCount == static_cast<int>(targets.size()))
+    {
+        status << "Pasted copied stats";
+        if (!g_statsClipboardSourceName.empty())
+        {
+            status << " from " << g_statsClipboardSourceName;
+        }
+        status << " to " << appliedCharacterCount << " selected character(s)";
+    }
+    else
+    {
+        status << "Pasted copied stats";
+        if (!g_statsClipboardSourceName.empty())
+        {
+            status << " from " << g_statsClipboardSourceName;
+        }
+        status << " to " << appliedCharacterCount << " of " << targets.size() << " selected character(s)";
+    }
+
+    if (anyClamped)
+    {
+        status << " (clamped)";
+    }
+    SetStatusMessage(status.str());
+}
+
 void SetActiveStatsSectionFilter(StatsSectionFilter section)
 {
     g_activeStatsSectionFilter = section;
@@ -12889,6 +13273,38 @@ void OnStatsWeaponsSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseBu
 void OnStatsLaborSectionButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
 {
     HandleStatsSectionButtonPressed(id, StatsSectionFilter_Labor);
+}
+
+void OnStatsCopyButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    CopyCurrentStatsBlock();
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
+}
+
+void OnStatsPasteButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
+{
+    if (id != MyGUI::MouseButton::Left)
+    {
+        return;
+    }
+
+    MyGUI::InputManager* inputManager = MyGUI::InputManager::getInstancePtr();
+    PasteCopiedStatsBlock();
+
+    if (inputManager)
+    {
+        inputManager->resetMouseCaptureWidget();
+    }
 }
 
 void OnStatsSetButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
@@ -14723,6 +15139,9 @@ bool HasAllPanelWidgets()
         && g_statsSectionText
         && g_statsScopeText
         && g_statsApplyToAllButton
+        && g_statsClipboardText
+        && g_statsCopyButton
+        && g_statsPasteButton
         && g_statsSectionFilterText
         && g_statsAllSectionButton
         && g_statsCommonSectionButton
@@ -14831,6 +15250,7 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_limbDamageSectionText);
     ConfigureTextWidget(g_statsSectionText);
     ConfigureTextWidget(g_statsScopeText);
+    ConfigureTextWidget(g_statsClipboardText);
     ConfigureTextWidget(g_statsSectionFilterText);
     ConfigureTextWidget(g_statsSearchLabelText);
     ConfigureTextWidget(g_statsResultCountText);
@@ -14899,6 +15319,7 @@ void InitializePanelWidgets()
     g_limbDamageSectionText->setCaption("Limb Damage");
     g_statsSectionText->setCaption("Stats");
     g_statsScopeText->setCaption("Scope: No selected character");
+    g_statsClipboardText->setCaption("Clipboard: Empty");
     g_statsSectionFilterText->setCaption("Sections");
     g_statsSearchLabelText->setCaption("Search");
     g_statsResultCountText->setCaption("0 stats");
@@ -14941,6 +15362,8 @@ void InitializePanelWidgets()
     g_damageLeftLegButton->setCaption("Damage Left Leg");
     g_damageRightLegButton->setCaption("Damage Right Leg");
     g_statsApplyToAllButton->setCaption("Apply To All Selected: Off");
+    g_statsCopyButton->setCaption("Copy Current Stats");
+    g_statsPasteButton->setCaption("Paste To Selected");
     UpdateStatsSectionButtonCaptions();
     g_statsSearchEdit->setEditStatic(false);
     g_statsSearchEdit->setMaxTextLength(48);
@@ -15056,6 +15479,8 @@ void InitializePanelWidgets()
     g_statsCombatSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsCombatSectionButtonPressed);
     g_statsWeaponsSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsWeaponsSectionButtonPressed);
     g_statsLaborSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsLaborSectionButtonPressed);
+    g_statsCopyButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsCopyButtonPressed);
+    g_statsPasteButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsPasteButtonPressed);
     g_statsSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnStatsSearchTextChanged);
     g_statsResultsList->eventListChangePosition += MyGUI::newDelegate(&OnStatsResultsSelectionChanged);
     g_statsInputEdit->eventEditTextChange += MyGUI::newDelegate(&OnStatsInputTextChanged);
@@ -15288,85 +15713,97 @@ void CreatePanelWidgets()
         "Kenshi_Button1",
         BuildBodyCoord(20, 254, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
-    g_statsSectionFilterText = bodyParent->createWidget<MyGUI::TextBox>(
+    g_statsClipboardText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
         BuildBodyCoord(20, 288, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
+    g_statsCopyButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 310, 156, 28),
+        MyGUI::Align::Default);
+    g_statsPasteButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(184, 310, 156, 28),
+        MyGUI::Align::Default);
+    g_statsSectionFilterText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 344, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
     g_statsAllSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 310, 70, 28),
+        BuildBodyCoord(20, 366, 70, 28),
         MyGUI::Align::Default);
     g_statsCommonSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(96, 310, 78, 28),
+        BuildBodyCoord(96, 366, 78, 28),
         MyGUI::Align::Default);
     g_statsCoreSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(180, 310, 70, 28),
+        BuildBodyCoord(180, 366, 70, 28),
         MyGUI::Align::Default);
     g_statsUtilitySectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(256, 310, 84, 28),
+        BuildBodyCoord(256, 366, 84, 28),
         MyGUI::Align::Default);
     g_statsCombatSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 344, 94, 28),
+        BuildBodyCoord(20, 400, 94, 28),
         MyGUI::Align::Default);
     g_statsWeaponsSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(120, 344, 96, 28),
+        BuildBodyCoord(120, 400, 96, 28),
         MyGUI::Align::Default);
     g_statsLaborSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(222, 344, 118, 28),
+        BuildBodyCoord(222, 400, 118, 28),
         MyGUI::Align::Default);
     g_statsSearchLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 378, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 434, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 400, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 456, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_statsResultCountText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 434, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 490, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        BuildBodyCoord(20, 456, kPanelWidth - 40, 114),
+        BuildBodyCoord(20, 512, kPanelWidth - 40, 114),
         MyGUI::Align::Default);
     g_statsSelectedSummaryText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 576, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 632, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsCurrentValueText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 598, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 654, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsInputLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 620, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 676, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsInputEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 642, 96, 28),
+        BuildBodyCoord(20, 698, 96, 28),
         MyGUI::Align::Default);
     g_statsSetButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(124, 642, 64, 28),
+        BuildBodyCoord(124, 698, 64, 28),
         MyGUI::Align::Default);
     g_statsAddButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(196, 642, 64, 28),
+        BuildBodyCoord(196, 698, 64, 28),
         MyGUI::Align::Default);
     g_statsSubtractButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(268, 642, 72, 28),
+        BuildBodyCoord(268, 698, 72, 28),
         MyGUI::Align::Default);
     g_statsPreviewText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 676, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 732, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_teleportSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
