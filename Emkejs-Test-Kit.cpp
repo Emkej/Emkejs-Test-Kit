@@ -9768,6 +9768,57 @@ void UpdateTargetInspection(PlayerInterface* player)
     g_hasLastTargetSnapshot = true;
 }
 
+bool TryRestoreRequestedSelectedSpawnTarget(PlayerInterface* player, Character* requestedTarget)
+{
+    if (!player || !requestedTarget)
+    {
+        return false;
+    }
+
+    auto TrySelectRequestedTarget = [](PlayerInterface* localPlayer, Character* localTarget) -> bool
+    {
+        if (!localPlayer || !localTarget)
+        {
+            return false;
+        }
+
+        __try
+        {
+            localPlayer->selectObject(localTarget, false);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    };
+
+    if (!TrySelectRequestedTarget(player, requestedTarget))
+    {
+        return false;
+    }
+
+    Character* selectedTarget = 0;
+    if (!TryGetSelectedTarget(player, &selectedTarget) || selectedTarget != requestedTarget)
+    {
+        return false;
+    }
+
+    TargetSnapshot snapshot;
+    BuildTargetSnapshot(player, selectedTarget, TargetSource_Selected, &snapshot);
+    if (!snapshot.hasTarget || snapshot.target != requestedTarget)
+    {
+        return false;
+    }
+
+    ApplyTargetSnapshotToUi(snapshot);
+    UpdateSelectionActionButtons(player);
+    LogTargetSnapshotIfChanged(snapshot);
+    g_lastTargetSnapshot = snapshot;
+    g_hasLastTargetSnapshot = true;
+    return true;
+}
+
 void LogActionRequested(const char* actionId)
 {
     std::stringstream requested;
@@ -11479,6 +11530,7 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
 
     Character* requestedTarget = g_lastTargetSnapshot.target;
     const std::string requestedTargetName = g_lastTargetSnapshot.name;
+    const TargetSource requestedTargetSource = g_lastTargetSnapshot.source;
 
     GameData* templateData = 0;
     std::string displayName;
@@ -11555,6 +11607,31 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
         result << " reason=\"" << SanitizeLogValue(applyResult.message) << "\"";
     }
     LogInfoLine(result.str());
+
+    bool restoredRequestedTarget = false;
+    if (applyResult.spawnedCount > 0
+        && requestedTargetSource == TargetSource_Selected
+        && g_lastPlayerInterface)
+    {
+        restoredRequestedTarget =
+            TryRestoreRequestedSelectedSpawnTarget(g_lastPlayerInterface, requestedTarget);
+    }
+
+    if (g_developerMode && applyResult.spawnedCount > 0)
+    {
+        std::stringstream line;
+        line << "[investigate][spawn][selection_restore] requested_target_name=\""
+             << SanitizeLogValue(requestedTargetName) << "\""
+             << " source=\"" << TargetSourceToLogLabel(requestedTargetSource) << "\""
+             << " attempted="
+             << ((requestedTargetSource == TargetSource_Selected && g_lastPlayerInterface) ? "true" : "false")
+             << " restored=" << (restoredRequestedTarget ? "true" : "false");
+        if (g_hasLastTargetSnapshot && g_lastTargetSnapshot.hasTarget)
+        {
+            line << " current_target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\"";
+        }
+        LogInfoLine(line.str());
+    }
 
     if (applyResult.spawnedCount <= 0)
     {
