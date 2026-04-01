@@ -48,6 +48,12 @@ enum PanelTab
     PanelTab_Spawn = 4
 };
 
+enum LoggingLevel
+{
+    LoggingLevel_Info = 0,
+    LoggingLevel_Debug = 1
+};
+
 struct TargetSnapshot
 {
     bool hasTarget;
@@ -86,6 +92,22 @@ struct CharacterPositionSnapshot
     bool hasRawPosition;
     bool hasRawEntityPosition;
     bool hasTerrainHeight;
+};
+
+struct SavedLocation
+{
+    SavedLocation()
+        : position(0.0f, 0.0f, 0.0f)
+        , pinned(false)
+        , lastUsedUtc(0u)
+    {
+    }
+
+    std::string id;
+    std::string name;
+    Ogre::Vector3 position;
+    bool pinned;
+    unsigned long long lastUsedUtc;
 };
 
 enum StatsEditOperation
@@ -155,13 +177,28 @@ extern const int kPanelHeaderButtonSizeUpperBound;
 extern const int kPanelHeaderButtonGap;
 extern const int kPanelHeaderButtonRightPadding;
 extern const int kInventoryItemDropdownMaxListLength;
+extern const int kPanelWidthDefault;
+extern const int kPanelWidthLowerBound;
+extern const int kPanelWidthUpperBound;
+extern const int kPanelMinExpandedHeightDefault;
+extern const int kPanelHeaderTitleFontHeightDefault;
+extern const int kPanelCollapseButtonSizeDefault;
+extern const int kPanelCloseButtonSizeDefault;
+extern const int kPanelBodyOverlapDefault;
+extern const char* kDeveloperModeConfigKey;
+extern const char* kSavedLocationsConfigKey;
+extern const char* kDefaultTogglePanelKey;
 
 extern int kPanelWidth;
 
+extern std::string g_configPath;
+extern bool g_pluginEnabled;
 extern bool g_developerMode;
+extern LoggingLevel g_loggingLevel;
 extern bool g_togglePanelRequireCtrl;
 extern bool g_togglePanelRequireShift;
 extern bool g_togglePanelRequireAlt;
+extern std::string g_togglePanelKey;
 extern bool g_hotkeyEnabled;
 extern int g_hotkeyVirtualKey;
 extern std::string g_hotkeyDisplay;
@@ -301,6 +338,7 @@ extern MyGUI::TextBox* g_statusText;
 
 extern std::vector<int> g_filteredStatsRegistryIndexes;
 extern std::vector<StatsClipboardEntry> g_statsClipboardEntries;
+extern std::vector<SavedLocation> g_savedLocations;
 extern StatsEnumerated g_selectedStatsStat;
 extern bool g_statsApplyToAllSelected;
 extern StatsSectionFilter g_activeStatsSectionFilter;
@@ -327,10 +365,6 @@ const char* TargetSourceToLogLabel(TargetSource source);
 bool IsProbablyReadableEnginePointer(const void* pointer);
 bool TryParsePositiveInt(const std::string& value, int* outValue);
 bool TryParseNonNegativeInt(const std::string& value, int* outValue);
-bool TryResolveModConfigPath(std::string* outPath);
-bool TryReadTextFile(const std::string& path, std::string* outContent);
-bool TryWriteTextFile(const std::string& path, const std::string& content);
-bool TryReplaceJsonBoolByKey(std::string* content, const char* key, bool value);
 bool TryGetCharacterPositionSnapshot(Character* character, CharacterPositionSnapshot* outSnapshot);
 bool TryResolveCharacterFaction(Character* character, Faction** outFaction);
 bool TryGetCharacterTeleportReferencePosition(
@@ -349,12 +383,6 @@ void SetStatusMessage(const std::string& message);
 void UpdateForceDyingButtonCaption();
 void ClearForceDyingArm(const char* reason, bool updateStatus);
 void SetActivePanelTab(PanelTab tab);
-int ClampPanelHeightSettingValue(int value);
-int ClampPanelHeaderTitleFontHeightValue(int value);
-int ClampPanelHeaderButtonSizeValue(int value);
-int ClampPanelBodyOverlapValue(int value);
-void NormalizePanelHeightSettings();
-void NormalizePanelVisualSettings();
 void RefreshStatusWidget();
 void RefreshSaveLocationInputUi();
 void RefreshSavedLocationsListWidget();

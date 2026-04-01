@@ -18,6 +18,9 @@
     <ClCompile Include="Emkejs-Test-Kit.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\test_kit_config.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\test_kit_panel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -32,6 +35,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\test_kit_config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\test_kit_internal.h">
       <Filter>Header Files</Filter>
     </ClInclude>

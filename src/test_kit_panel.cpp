@@ -1,5 +1,6 @@
 #include "test_kit_panel.h"
 
+#include "test_kit_config.h"
 #include "test_kit_spawn.h"
 #include "test_kit_stats.h"
 
@@ -174,45 +175,6 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_spawnCharactersButton, spawnVisible);
 
     SetWidgetVisible(g_statusText, bodyVisible);
-}
-
-void PersistCollapsedStateSetting()
-{
-    std::string configPath;
-    if (!TryResolveModConfigPath(&configPath))
-    {
-        LogWarnLine("collapsed-state persistence skipped: could not resolve mod config path");
-        return;
-    }
-
-    std::string configText;
-    if (!TryReadTextFile(configPath, &configText))
-    {
-        std::stringstream line;
-        line << "collapsed-state persistence skipped: could not read " << configPath;
-        LogWarnLine(line.str());
-        return;
-    }
-
-    if (!TryReplaceJsonBoolByKey(&configText, "start_collapsed", g_panelCollapsed))
-    {
-        std::stringstream line;
-        line << "collapsed-state persistence skipped: missing start_collapsed in " << configPath;
-        LogWarnLine(line.str());
-        return;
-    }
-
-    if (!TryWriteTextFile(configPath, configText))
-    {
-        std::stringstream line;
-        line << "collapsed-state persistence failed: could not write " << configPath;
-        LogWarnLine(line.str());
-        return;
-    }
-
-    std::stringstream line;
-    line << "event=testkit_panel_collapsed_persisted collapsed=" << (g_panelCollapsed ? "true" : "false");
-    LogDebugLine(line.str());
 }
 
 bool TryGetViewportSize(int* widthOut, int* heightOut)
