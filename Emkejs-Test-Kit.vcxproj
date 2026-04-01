@@ -93,6 +93,7 @@
     <ClCompile Include="src\test_kit_inventory.cpp" />
     <ClCompile Include="src\test_kit_panel.cpp" />
     <ClCompile Include="src\test_kit_spawn.cpp" />
+    <ClCompile Include="src\test_kit_spawn_runtime.cpp" />
     <ClCompile Include="src\test_kit_stats.cpp" />
     <ClCompile Include="src\test_kit_teleport.cpp" />
     <ClCompile Include="tools\mod-hub-sdk\src\mod_hub_client.cpp" />
@@ -104,6 +105,7 @@
     <ClInclude Include="src\test_kit_internal.h" />
     <ClInclude Include="src\test_kit_panel.h" />
     <ClInclude Include="src\test_kit_spawn.h" />
+    <ClInclude Include="src\test_kit_spawn_runtime.h" />
     <ClInclude Include="src\test_kit_stats.h" />
     <ClInclude Include="src\test_kit_teleport.h" />
   </ItemGroup>

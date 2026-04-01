@@ -33,6 +33,9 @@
     <ClCompile Include="src\test_kit_spawn.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\test_kit_spawn_runtime.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\test_kit_stats.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -60,6 +63,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\test_kit_spawn.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\test_kit_spawn_runtime.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\test_kit_stats.h">
