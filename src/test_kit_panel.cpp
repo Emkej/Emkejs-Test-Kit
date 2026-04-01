@@ -1,6 +1,7 @@
 #include "test_kit_panel.h"
 
 #include "test_kit_config.h"
+#include "test_kit_inventory.h"
 #include "test_kit_spawn.h"
 #include "test_kit_stats.h"
 #include "test_kit_teleport.h"
@@ -676,8 +677,7 @@ void TickPanelDrag()
 
 void ResetPanelWidgetPointers()
 {
-    ResetPendingInventorySearchShortcut();
-    ResetInventorySearchEditSnapshot();
+    ResetInventoryWidgetInteractionState();
 
     g_panel = 0;
     g_headerBackground = 0;
