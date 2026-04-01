@@ -23,8 +23,11 @@
 #include <mygui/MyGUI_TextBox.h>
 #include <mygui/MyGUI_Widget.h>
 
+#include <sstream>
 #include <string>
 #include <vector>
+
+class Faction;
 
 namespace test_kit
 {
@@ -59,6 +62,30 @@ struct TargetSnapshot
     bool playingDead;
     bool dying;
     bool dead;
+};
+
+struct CharacterPositionSnapshot
+{
+    CharacterPositionSnapshot()
+        : position(0.0f, 0.0f, 0.0f)
+        , rawPosition(0.0f, 0.0f, 0.0f)
+        , rawEntityPosition(0.0f, 0.0f, 0.0f)
+        , terrainHeight(0.0f)
+        , hasPosition(false)
+        , hasRawPosition(false)
+        , hasRawEntityPosition(false)
+        , hasTerrainHeight(false)
+    {
+    }
+
+    Ogre::Vector3 position;
+    Ogre::Vector3 rawPosition;
+    Ogre::Vector3 rawEntityPosition;
+    float terrainHeight;
+    bool hasPosition;
+    bool hasRawPosition;
+    bool hasRawEntityPosition;
+    bool hasTerrainHeight;
 };
 
 enum StatsEditOperation
@@ -127,11 +154,11 @@ extern const int kPanelHeaderButtonSizeLowerBound;
 extern const int kPanelHeaderButtonSizeUpperBound;
 extern const int kPanelHeaderButtonGap;
 extern const int kPanelHeaderButtonRightPadding;
-extern const int kSpawnTemplateQuantityMax;
 extern const int kInventoryItemDropdownMaxListLength;
 
 extern int kPanelWidth;
 
+extern bool g_developerMode;
 extern bool g_togglePanelRequireCtrl;
 extern bool g_togglePanelRequireShift;
 extern bool g_togglePanelRequireAlt;
@@ -160,6 +187,8 @@ extern bool g_forceDyingArmed;
 extern DWORD g_forceDyingArmedAtMs;
 extern std::string g_lastStatusMessage;
 extern PanelTab g_activePanelTab;
+extern TargetSnapshot g_lastTargetSnapshot;
+extern bool g_hasLastTargetSnapshot;
 extern PlayerInterface* g_lastPlayerInterface;
 extern bool g_loggedPanelCreateFailure;
 
@@ -287,15 +316,28 @@ bool HasPrimarySelectedCharacter(PlayerInterface* player);
 Character* TryGetPrimarySelectedCharacter(PlayerInterface* player);
 int ClampIntValue(int value, int minValue, int maxValue);
 int ClampPanelWidthValue(int value);
+float ComputeHorizontalDistance(const Ogre::Vector3& a, const Ogre::Vector3& b);
 std::string TrimAscii(const std::string& value);
 std::string ToUpperAscii(const std::string& value);
 std::string SanitizeLogValue(const std::string& value);
 std::string SafeCharacterName(Character* target);
+std::string SafeFactionName(Faction* faction);
+std::string FormatPointerValue(const void* pointer);
+const char* TargetSourceToLogLabel(TargetSource source);
+bool IsProbablyReadableEnginePointer(const void* pointer);
+bool TryParsePositiveInt(const std::string& value, int* outValue);
 bool TryParseNonNegativeInt(const std::string& value, int* outValue);
 bool TryResolveModConfigPath(std::string* outPath);
 bool TryReadTextFile(const std::string& path, std::string* outContent);
 bool TryWriteTextFile(const std::string& path, const std::string& content);
 bool TryReplaceJsonBoolByKey(std::string* content, const char* key, bool value);
+bool TryGetCharacterPositionSnapshot(Character* character, CharacterPositionSnapshot* outSnapshot);
+bool TryResolveCharacterFaction(Character* character, Faction** outFaction);
+bool TryGetCharacterTeleportReferencePosition(
+    Character* character,
+    bool useSpawnValidation,
+    Ogre::Vector3* outPosition,
+    const char** outSourceLabel);
 void LogInfoLine(const std::string& message);
 void LogWarnLine(const std::string& message);
 void LogErrorLine(const std::string& message);
@@ -325,9 +367,6 @@ void UpdateTargetInspection(PlayerInterface* player);
 void TickForceDyingArmTimeout();
 void EnsureInventoryFoodItemOptionsLoaded();
 void RefreshInventoryFoodItemDropdown();
-void EnsureSpawnTemplateOptionsLoaded();
-void RefreshSpawnTemplateList();
-void RefreshSpawnCreatureAgeControlState();
 void OnFullRestoreButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnForceUnconsciousButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnForcePlayingDeadButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
@@ -353,14 +392,10 @@ void OnInventoryItemSearchKeyPressed(MyGUI::Widget*, MyGUI::KeyCode, MyGUI::Char
 void OnInventoryItemSearchKeyReleased(MyGUI::Widget*, MyGUI::KeyCode);
 void OnInventorySearchResultsSelectionChanged(MyGUI::ListBox*, size_t);
 void OnSpawnItemButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnSpawnCategoryChanged(MyGUI::ComboBox*, size_t);
-void OnSpawnSearchTextChanged(MyGUI::EditBox*);
-void OnSpawnResultsSelectionChanged(MyGUI::ListBox*, size_t);
-void OnSpawnQuantityTextChanged(MyGUI::EditBox*);
-void OnSpawnAllegianceChanged(MyGUI::ComboBox*, size_t);
-void OnSpawnRadiusChanged(MyGUI::ComboBox*, size_t);
-void OnSpawnCreatureAgeChanged(MyGUI::ComboBox*, size_t);
-void OnSpawnModeChanged(MyGUI::ComboBox*, size_t);
-void OnSpawnCharactersButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 void OnForceDyingButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
+bool TryRestoreRequestedSelectedSpawnTarget(PlayerInterface* player, Character* requestedTarget);
+void AppendCharacterSnapshotLogFields(
+    std::stringstream& line,
+    const char* prefix,
+    const CharacterPositionSnapshot& snapshot);
 }

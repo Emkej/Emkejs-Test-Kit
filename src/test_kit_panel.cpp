@@ -1,5 +1,6 @@
 #include "test_kit_panel.h"
 
+#include "test_kit_spawn.h"
 #include "test_kit_stats.h"
 
 #include <mygui/MyGUI_Delegate.h>
