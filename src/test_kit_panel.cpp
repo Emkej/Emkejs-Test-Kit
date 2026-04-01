@@ -1,6 +1,7 @@
 #include "test_kit_panel.h"
 
 #include "test_kit_config.h"
+#include "test_kit_health.h"
 #include "test_kit_inventory.h"
 #include "test_kit_spawn.h"
 #include "test_kit_stats.h"

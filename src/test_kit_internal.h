@@ -378,8 +378,6 @@ void LogErrorLine(const std::string& message);
 void LogDebugLine(const std::string& message);
 void LogActionRequested(const char* actionId);
 void SetStatusMessage(const std::string& message);
-void UpdateForceDyingButtonCaption();
-void ClearForceDyingArm(const char* reason, bool updateStatus);
 void SetActivePanelTab(PanelTab tab);
 void RefreshStatusWidget();
 void SetActionButtonsEnabled(bool enabled);
@@ -387,15 +385,6 @@ void SetSelectionActionButtonsEnabled(bool enabled);
 void ResetTargetSnapshot(TargetSnapshot* snapshot);
 void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot);
 void UpdateTargetInspection(PlayerInterface* player);
-void TickForceDyingArmTimeout();
-void OnFullRestoreButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnForceUnconsciousButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnForcePlayingDeadButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnDamageLeftArmButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnDamageRightArmButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnDamageLeftLegButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnDamageRightLegButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
-void OnForceDyingButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton);
 bool TryRestoreRequestedSelectedSpawnTarget(PlayerInterface* player, Character* requestedTarget);
 void AppendCharacterSnapshotLogFields(
     std::stringstream& line,
