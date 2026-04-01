@@ -98,13 +98,13 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_statesSectionText, healthVisible);
     SetWidgetVisible(g_fullRestoreButton, healthVisible);
     SetWidgetVisible(g_forceUnconsciousButton, healthVisible);
-    SetWidgetVisible(g_forcePlayingDeadButton, healthVisible);
     SetWidgetVisible(g_limbDamageSectionText, healthVisible);
     SetWidgetVisible(g_damageLeftArmButton, healthVisible);
     SetWidgetVisible(g_damageRightArmButton, healthVisible);
     SetWidgetVisible(g_damageLeftLegButton, healthVisible);
     SetWidgetVisible(g_damageRightLegButton, healthVisible);
     SetWidgetVisible(g_dangerousSectionText, healthVisible);
+    SetWidgetVisible(g_forceDeadButton, healthVisible);
     SetWidgetVisible(g_forceDyingButton, healthVisible);
 
     SetWidgetVisible(g_statsSectionText, statsVisible);
@@ -279,7 +279,7 @@ int GetActivePanelContentBottomInBodyCoords()
             GetWidgetBottom(g_spawnCharactersButton, 676 - bodyTop));
     case PanelTab_Health:
     default:
-        bottom = GetWidgetBottom(g_forceDyingButton, 478 - bodyTop);
+        bottom = GetWidgetBottom(g_forceDyingButton, 512 - bodyTop);
         break;
     }
 
@@ -703,7 +703,6 @@ void ResetPanelWidgetPointers()
     g_statesSectionText = 0;
     g_fullRestoreButton = 0;
     g_forceUnconsciousButton = 0;
-    g_forcePlayingDeadButton = 0;
     g_limbDamageSectionText = 0;
     g_damageLeftArmButton = 0;
     g_damageRightArmButton = 0;
@@ -784,6 +783,7 @@ void ResetPanelWidgetPointers()
     g_spawnPreviewText = 0;
     g_spawnCharactersButton = 0;
     g_dangerousSectionText = 0;
+    g_forceDeadButton = 0;
     g_forceDyingButton = 0;
     g_statusText = 0;
     g_filteredStatsRegistryIndexes.clear();
@@ -987,7 +987,6 @@ bool HasAllPanelWidgets()
         && g_statesSectionText
         && g_fullRestoreButton
         && g_forceUnconsciousButton
-        && g_forcePlayingDeadButton
         && g_limbDamageSectionText
         && g_damageLeftArmButton
         && g_damageRightArmButton
@@ -1068,6 +1067,7 @@ bool HasAllPanelWidgets()
         && g_spawnPreviewText
         && g_spawnCharactersButton
         && g_dangerousSectionText
+        && g_forceDeadButton
         && g_forceDyingButton
         && g_statusText;
 }
@@ -1294,7 +1294,6 @@ void InitializePanelWidgets()
 
     g_fullRestoreButton->setCaption("Full Restore");
     g_forceUnconsciousButton->setCaption("Force Unconscious");
-    g_forcePlayingDeadButton->setCaption("Force Playing Dead");
     g_damageLeftArmButton->setCaption("Damage Left Arm");
     g_damageRightArmButton->setCaption("Damage Right Arm");
     g_damageLeftLegButton->setCaption("Damage Left Leg");
@@ -1389,7 +1388,7 @@ void InitializePanelWidgets()
     EnsureSpawnTemplateOptionsLoaded();
     RefreshSpawnTemplateList();
     RefreshSpawnCreatureAgeControlState();
-    UpdateForceDyingButtonCaption();
+    UpdateDangerousActionButtonCaptions();
     UpdateCollapseButtonCaption();
     RefreshStatusWidget();
     SetActionButtonsEnabled(false);
@@ -1404,11 +1403,11 @@ void InitializePanelWidgets()
     g_spawnTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnTabButtonPressed);
     g_fullRestoreButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnFullRestoreButtonPressed);
     g_forceUnconsciousButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceUnconsciousButtonPressed);
-    g_forcePlayingDeadButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForcePlayingDeadButtonPressed);
     g_damageLeftArmButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftArmButtonPressed);
     g_damageRightArmButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightArmButtonPressed);
     g_damageLeftLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageLeftLegButtonPressed);
     g_damageRightLegButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnDamageRightLegButtonPressed);
+    g_forceDeadButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDeadButtonPressed);
     g_statsApplyToAllButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsApplyToAllButtonPressed);
     g_statsAllSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsAllSectionButtonPressed);
     g_statsCommonSectionButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnStatsCommonSectionButtonPressed);
@@ -1584,8 +1583,8 @@ void DestroyPanel()
     g_panelDragLastMouseX = 0;
     g_panelDragLastMouseY = 0;
     g_panelDragMovedDistance = 0;
-    g_forceDyingArmed = false;
-    g_forceDyingArmedAtMs = 0;
+    g_armedDangerousHealthAction = DangerousHealthAction_None;
+    g_dangerousHealthActionArmedAtMs = 0;
 }
 
 void SetActivePanelTab(PanelTab tab)
@@ -1754,29 +1753,25 @@ void CreatePanelWidgets()
         "Kenshi_Button1",
         BuildBodyCoord(20, 264, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
-    g_forcePlayingDeadButton = bodyParent->createWidget<MyGUI::Button>(
-        "Kenshi_Button1",
-        BuildBodyCoord(20, 298, kPanelWidth - 40, 28),
-        MyGUI::Align::Default);
     g_limbDamageSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 332, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 298, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
     g_damageLeftArmButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 354, 156, 28),
+        BuildBodyCoord(20, 320, 156, 28),
         MyGUI::Align::Default);
     g_damageRightArmButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 354, 156, 28),
+        BuildBodyCoord(184, 320, 156, 28),
         MyGUI::Align::Default);
     g_damageLeftLegButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 388, 156, 28),
+        BuildBodyCoord(20, 354, 156, 28),
         MyGUI::Align::Default);
     g_damageRightLegButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 388, 156, 28),
+        BuildBodyCoord(184, 354, 156, 28),
         MyGUI::Align::Default);
     g_statsSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
@@ -2076,7 +2071,11 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_dangerousSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 428, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 394, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_forceDeadButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 416, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_forceDyingButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
@@ -2114,9 +2113,9 @@ void EnsurePanel(PlayerInterface* thisptr)
     }
 
     TickPanelDrag();
-    TickForceDyingArmTimeout();
+    TickDangerousActionArmTimeout();
     UpdateCollapseButtonCaption();
-    UpdateForceDyingButtonCaption();
+    UpdateDangerousActionButtonCaptions();
     ApplyPanelLayout();
 
     if (!g_panelHidden && !g_panelCollapsed)
@@ -2131,7 +2130,7 @@ void TogglePanelHidden(const char* source)
 
     if (g_panelHidden)
     {
-        ClearForceDyingArm("panel_hidden", false);
+        ClearDangerousActionArm("panel_hidden", false);
     }
     else
     {
@@ -2147,7 +2146,7 @@ void TogglePanelCollapsed(const char* source)
     g_panelCollapsed = !g_panelCollapsed;
     if (g_panelCollapsed)
     {
-        ClearForceDyingArm("panel_collapsed", false);
+        ClearDangerousActionArm("panel_collapsed", false);
     }
 
     UpdateCollapseButtonCaption();

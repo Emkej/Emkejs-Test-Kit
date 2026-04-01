@@ -103,8 +103,8 @@ bool g_panelDragMoved = false;
 int g_panelDragLastMouseX = 0;
 int g_panelDragLastMouseY = 0;
 int g_panelDragMovedDistance = 0;
-bool g_forceDyingArmed = false;
-DWORD g_forceDyingArmedAtMs = 0;
+DangerousHealthAction g_armedDangerousHealthAction = DangerousHealthAction_None;
+DWORD g_dangerousHealthActionArmedAtMs = 0;
 std::string g_lastStatusMessage = "Ready";
 TargetSnapshot g_lastTargetSnapshot;
 bool g_hasLastTargetSnapshot = false;
@@ -136,7 +136,6 @@ MyGUI::Button* g_spawnTabButton = 0;
 MyGUI::TextBox* g_statesSectionText = 0;
 MyGUI::Button* g_fullRestoreButton = 0;
 MyGUI::Button* g_forceUnconsciousButton = 0;
-MyGUI::Button* g_forcePlayingDeadButton = 0;
 MyGUI::TextBox* g_limbDamageSectionText = 0;
 MyGUI::Button* g_damageLeftArmButton = 0;
 MyGUI::Button* g_damageRightArmButton = 0;
@@ -217,6 +216,7 @@ MyGUI::ComboBox* g_spawnModeDropdown = 0;
 MyGUI::TextBox* g_spawnPreviewText = 0;
 MyGUI::Button* g_spawnCharactersButton = 0;
 MyGUI::TextBox* g_dangerousSectionText = 0;
+MyGUI::Button* g_forceDeadButton = 0;
 MyGUI::Button* g_forceDyingButton = 0;
 MyGUI::TextBox* g_statusText = 0;
 
@@ -1223,10 +1223,6 @@ void SetActionButtonsEnabled(bool enabled)
     {
         g_forceUnconsciousButton->setEnabled(enabled);
     }
-    if (g_forcePlayingDeadButton)
-    {
-        g_forcePlayingDeadButton->setEnabled(enabled);
-    }
     if (g_damageLeftArmButton)
     {
         g_damageLeftArmButton->setEnabled(enabled);
@@ -1242,6 +1238,10 @@ void SetActionButtonsEnabled(bool enabled)
     if (g_damageRightLegButton)
     {
         g_damageRightLegButton->setEnabled(enabled);
+    }
+    if (g_forceDeadButton)
+    {
+        g_forceDeadButton->setEnabled(enabled);
     }
     if (g_forceDyingButton)
     {
@@ -1437,12 +1437,12 @@ void UpdateTargetInspection(PlayerInterface* player)
         BuildTargetSnapshot(player, target, source, &snapshot);
     }
 
-    if (g_forceDyingArmed
+    if (g_armedDangerousHealthAction != DangerousHealthAction_None
         && (!snapshot.hasTarget
             || (g_hasLastTargetSnapshot
                 && (snapshot.target != g_lastTargetSnapshot.target || snapshot.source != g_lastTargetSnapshot.source))))
     {
-        ClearForceDyingArm(snapshot.hasTarget ? "target_changed" : "target_lost", true);
+        ClearDangerousActionArm(snapshot.hasTarget ? "target_changed" : "target_lost", true);
     }
 
     ApplyTargetSnapshotToUi(snapshot);

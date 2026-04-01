@@ -54,6 +54,13 @@ enum LoggingLevel
     LoggingLevel_Debug = 1
 };
 
+enum DangerousHealthAction
+{
+    DangerousHealthAction_None = 0,
+    DangerousHealthAction_ForceDead = 1,
+    DangerousHealthAction_ForceDying = 2
+};
+
 struct TargetSnapshot
 {
     bool hasTarget;
@@ -220,8 +227,8 @@ extern bool g_panelDragMoved;
 extern int g_panelDragLastMouseX;
 extern int g_panelDragLastMouseY;
 extern int g_panelDragMovedDistance;
-extern bool g_forceDyingArmed;
-extern DWORD g_forceDyingArmedAtMs;
+extern DangerousHealthAction g_armedDangerousHealthAction;
+extern DWORD g_dangerousHealthActionArmedAtMs;
 extern std::string g_lastStatusMessage;
 extern PanelTab g_activePanelTab;
 extern TargetSnapshot g_lastTargetSnapshot;
@@ -252,7 +259,6 @@ extern MyGUI::Button* g_spawnTabButton;
 extern MyGUI::TextBox* g_statesSectionText;
 extern MyGUI::Button* g_fullRestoreButton;
 extern MyGUI::Button* g_forceUnconsciousButton;
-extern MyGUI::Button* g_forcePlayingDeadButton;
 extern MyGUI::TextBox* g_limbDamageSectionText;
 extern MyGUI::Button* g_damageLeftArmButton;
 extern MyGUI::Button* g_damageRightArmButton;
@@ -333,6 +339,7 @@ extern MyGUI::ComboBox* g_spawnModeDropdown;
 extern MyGUI::TextBox* g_spawnPreviewText;
 extern MyGUI::Button* g_spawnCharactersButton;
 extern MyGUI::TextBox* g_dangerousSectionText;
+extern MyGUI::Button* g_forceDeadButton;
 extern MyGUI::Button* g_forceDyingButton;
 extern MyGUI::TextBox* g_statusText;
 
