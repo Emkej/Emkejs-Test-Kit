@@ -1,6 +1,7 @@
 #include "test_kit_config.h"
 
 #include "test_kit_panel.h"
+#include "test_kit_teleport.h"
 
 #include <emc/mod_hub_client.h>
 #include <ois/OISKeyboard.h>

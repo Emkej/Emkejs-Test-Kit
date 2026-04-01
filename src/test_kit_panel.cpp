@@ -3,6 +3,7 @@
 #include "test_kit_config.h"
 #include "test_kit_spawn.h"
 #include "test_kit_stats.h"
+#include "test_kit_teleport.h"
 
 #include <mygui/MyGUI_Delegate.h>
 #include <mygui/MyGUI_Gui.h>
