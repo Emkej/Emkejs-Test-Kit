@@ -190,7 +190,13 @@ void RefreshSpawnCustomFactionResultsList()
     }
 
     EnsureSpawnFactionOptionsLoaded();
+    Faction* previouslySelectedFaction = 0;
     const size_t previousSelectedOptionIndex = GetSelectedSpawnFactionOptionIndex();
+    if (previousSelectedOptionIndex != static_cast<size_t>(-1)
+        && previousSelectedOptionIndex < g_spawnFactionOptions.size())
+    {
+        previouslySelectedFaction = g_spawnFactionOptions[previousSelectedOptionIndex].faction;
+    }
     const std::string searchUpper =
         NormalizeSpawnFactionValue(g_spawnCustomFactionSearchEdit->getOnlyText().asUTF8());
 
@@ -216,25 +222,13 @@ void RefreshSpawnCustomFactionResultsList()
 
     size_t nextSelectedFilteredIndex = static_cast<size_t>(-1);
     g_spawnCustomFactionResultsList->clearIndexSelected();
-    if (previousSelectedOptionIndex != static_cast<size_t>(-1))
+    if (previouslySelectedFaction)
     {
         for (size_t filteredIndex = 0; filteredIndex < g_filteredSpawnFactionOptionIndexes.size(); ++filteredIndex)
         {
-            if (g_filteredSpawnFactionOptionIndexes[filteredIndex] == previousSelectedOptionIndex)
-            {
-                nextSelectedFilteredIndex = filteredIndex;
-                break;
-            }
-        }
-    }
-
-    if (nextSelectedFilteredIndex == static_cast<size_t>(-1))
-    {
-        const size_t exactIndex =
-            FindExactSpawnFactionOptionIndex(g_spawnCustomFactionSearchEdit->getOnlyText().asUTF8());
-        for (size_t filteredIndex = 0; filteredIndex < g_filteredSpawnFactionOptionIndexes.size(); ++filteredIndex)
-        {
-            if (g_filteredSpawnFactionOptionIndexes[filteredIndex] == exactIndex)
+            const SpawnFactionOption& option =
+                g_spawnFactionOptions[g_filteredSpawnFactionOptionIndexes[filteredIndex]];
+            if (option.faction == previouslySelectedFaction)
             {
                 nextSelectedFilteredIndex = filteredIndex;
                 break;
@@ -332,20 +326,10 @@ bool TryResolveSelectedSpawnTemplateFactionSelection(
         return false;
     }
 
-    RefreshSpawnCustomFactionResultsList();
-    selection.customFactionQuery = TrimAscii(g_spawnCustomFactionSearchEdit->getOnlyText().asUTF8());
-    if (selection.customFactionQuery.empty())
-    {
-        if (outErrorMessage)
-        {
-            *outErrorMessage = "Select a faction";
-        }
-        return false;
-    }
-
     const size_t selectedOptionIndex = GetSelectedSpawnFactionOptionIndex();
     if (selectedOptionIndex == static_cast<size_t>(-1) || selectedOptionIndex >= g_spawnFactionOptions.size())
     {
+        selection.customFactionQuery = TrimAscii(g_spawnCustomFactionSearchEdit->getOnlyText().asUTF8());
         if (outErrorMessage)
         {
             *outErrorMessage = "Select a faction";
@@ -354,6 +338,10 @@ bool TryResolveSelectedSpawnTemplateFactionSelection(
     }
 
     const SpawnFactionOption& option = g_spawnFactionOptions[selectedOptionIndex];
+    selection.customFactionQuery =
+        !option.stringId.empty()
+            ? option.stringId
+            : (!option.name.empty() ? option.name : option.displayLabel);
     selection.customFaction = option.faction;
     selection.customFactionLabel = option.name.empty() ? option.displayLabel : option.name;
     if (outSelection)
