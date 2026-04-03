@@ -282,7 +282,7 @@ int GetActivePanelContentBottomInBodyCoords()
     case PanelTab_Spawn:
         return GetWidgetBottom(
             g_spawnPreviewText,
-            GetWidgetBottom(g_spawnCharactersButton, 844 - bodyTop));
+            GetWidgetBottom(g_spawnCharactersButton, 886 - bodyTop));
     case PanelTab_Health:
     default:
         bottom = GetWidgetBottom(g_forceDyingButton, 512 - bodyTop);
@@ -2107,7 +2107,7 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_spawnCustomFactionResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        BuildBodyCoord(20, 730, kPanelWidth - 40, 54),
+        BuildBodyCoord(20, 730, kPanelWidth - 40, 96),
         MyGUI::Align::Default);
     g_spawnModeLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
@@ -2119,11 +2119,11 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_spawnCharactersButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 792, 156, 28),
+        BuildBodyCoord(184, 834, 156, 28),
         MyGUI::Align::Default);
     g_spawnPreviewText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 826, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 868, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_dangerousSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
