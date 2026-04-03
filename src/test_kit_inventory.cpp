@@ -1571,6 +1571,11 @@ const char* GetInvestigateInventorySpawnStageLabel(int stage)
 
 void LogInvestigateInventorySpawnLine(const std::string& line)
 {
+    if (!g_developerMode)
+    {
+        return;
+    }
+
     LogInfoLine(std::string("[investigate][inventory_spawn] ") + line);
 }
 
