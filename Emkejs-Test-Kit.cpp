@@ -1471,6 +1471,7 @@ void OnSaveLoadTransitionStart(const char* source)
     ClearPendingDownedTeleportRestores();
     ResetTargetSnapshot(&g_lastTargetSnapshot);
     g_hasLastTargetSnapshot = false;
+    ResetSpawnTargetAnchor();
 }
 
 void PlayerInterface_updateUT_hook(PlayerInterface* thisptr)

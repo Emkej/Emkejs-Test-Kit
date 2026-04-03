@@ -1585,6 +1585,11 @@ void TryFinalizeSpawnedCharacterPosition(Character* spawnedCharacter)
 }
 } // namespace
 
+bool TryGetSpawnTargetWithPlayerState(Character* character, bool* outIsWithPlayer)
+{
+    return TryResolveCharacterWithPlayer(character, outIsWithPlayer);
+}
+
 bool TryGetSpawnTemplateFactionRestrictionMessage(
     Character* target,
     SpawnTemplateSquadMode squadMode,

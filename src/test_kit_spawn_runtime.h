@@ -4,6 +4,8 @@
 
 namespace test_kit
 {
+bool TryGetSpawnTargetWithPlayerState(Character* character, bool* outIsWithPlayer);
+
 bool TryGetSpawnTemplateFactionRestrictionMessage(
     Character* target,
     SpawnTemplateSquadMode squadMode,

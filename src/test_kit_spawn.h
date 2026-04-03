@@ -106,6 +106,7 @@ void RefreshSpawnCreatureAgeControlState();
 void RefreshSpawnFactionControlState();
 void RefreshSpawnButtonState();
 void RefreshSpawnPreviewText();
+void ResetSpawnTargetAnchor();
 bool ShouldShowSpawnCustomFactionControls();
 void OnSpawnSearchTextChanged(MyGUI::EditBox*);
 void OnSpawnCategoryChanged(MyGUI::ComboBox*, size_t);

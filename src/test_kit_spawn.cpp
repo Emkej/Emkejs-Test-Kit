@@ -34,6 +34,8 @@ std::vector<SpawnTemplateOption> g_spawnTemplateOptions;
 std::vector<size_t> g_filteredSpawnTemplateOptionIndexes;
 bool g_spawnSelectionSyncInProgress = false;
 bool g_spawnTemplateOptionsLoaded = false;
+TargetSnapshot g_lastSelectedSpawnTargetSnapshot;
+bool g_hasLastSelectedSpawnTargetSnapshot = false;
 }
 
 bool TryResolveSelectedSpawnTemplate(GameData** templateDataOut, std::string* displayNameOut, std::string* summaryLabelOut);
@@ -49,6 +51,7 @@ SpawnTemplateAllegiance GetSelectedSpawnTemplateAllegiance();
 SpawnTemplateRadiusPreset GetSelectedSpawnTemplateRadiusPreset();
 SpawnTemplateSquadMode GetSelectedSpawnTemplateSquadMode();
 SpawnCreatureAgePreset GetSelectedSpawnCreatureAgePreset();
+bool TryGetSelectedSpawnTargetSnapshot(TargetSnapshot* outSnapshot);
 bool TryResolveAndValidateSpawnTemplateFactionSelection(
     Character* target,
     SpawnTemplateSquadMode squadMode,
@@ -234,6 +237,125 @@ SpawnTemplateSquadMode GetSelectedSpawnTemplateSquadMode()
     }
 }
 
+bool HasUsableSpawnTargetSnapshot(const TargetSnapshot& snapshot)
+{
+    return snapshot.hasTarget && snapshot.target != 0;
+}
+
+void CacheSpawnTargetSnapshot(const TargetSnapshot& snapshot)
+{
+    if (!HasUsableSpawnTargetSnapshot(snapshot))
+    {
+        return;
+    }
+
+    g_lastSelectedSpawnTargetSnapshot = snapshot;
+    g_hasLastSelectedSpawnTargetSnapshot = true;
+}
+
+bool IsSpawnTargetCompatibleWithCurrentSelection(Character* target, bool* outCouldEvaluate)
+{
+    if (outCouldEvaluate)
+    {
+        *outCouldEvaluate = false;
+    }
+
+    if (!target)
+    {
+        return false;
+    }
+
+    const SpawnTemplateAllegiance allegiance = GetSelectedSpawnTemplateAllegiance();
+    const SpawnTemplateSquadMode squadMode = GetSelectedSpawnTemplateSquadMode();
+    if (!IsSpawnTemplateModeAllowed(squadMode, allegiance))
+    {
+        return false;
+    }
+
+    SpawnTemplateFactionSelection factionSelection;
+    std::string factionMessage;
+    if (!TryResolveSelectedSpawnTemplateFactionSelection(&factionSelection, &factionMessage))
+    {
+        return false;
+    }
+
+    if (outCouldEvaluate)
+    {
+        *outCouldEvaluate = true;
+    }
+
+    return TryGetSpawnTemplateFactionRestrictionMessage(
+        target,
+        squadMode,
+        allegiance,
+        factionSelection,
+        &factionMessage);
+}
+
+bool TryGetSelectedSpawnTargetSnapshot(TargetSnapshot* outSnapshot)
+{
+    if (outSnapshot)
+    {
+        ResetTargetSnapshot(outSnapshot);
+    }
+
+    const bool hasCurrentSelectedTarget =
+        g_hasLastTargetSnapshot
+        && g_lastTargetSnapshot.source == TargetSource_Selected
+        && HasUsableSpawnTargetSnapshot(g_lastTargetSnapshot);
+    const bool hasCachedSelectedTarget =
+        g_hasLastSelectedSpawnTargetSnapshot
+        && HasUsableSpawnTargetSnapshot(g_lastSelectedSpawnTargetSnapshot);
+
+    if (hasCurrentSelectedTarget)
+    {
+        bool couldEvaluateCurrentCompatibility = false;
+        const bool currentCompatible =
+            IsSpawnTargetCompatibleWithCurrentSelection(
+                g_lastTargetSnapshot.target,
+                &couldEvaluateCurrentCompatibility);
+        bool cachedCompatible = false;
+        if (couldEvaluateCurrentCompatibility && hasCachedSelectedTarget)
+        {
+            cachedCompatible =
+                IsSpawnTargetCompatibleWithCurrentSelection(
+                    g_lastSelectedSpawnTargetSnapshot.target,
+                    0);
+        }
+
+        if (!couldEvaluateCurrentCompatibility || currentCompatible || !hasCachedSelectedTarget || !cachedCompatible)
+        {
+            CacheSpawnTargetSnapshot(g_lastTargetSnapshot);
+            if (outSnapshot)
+            {
+                *outSnapshot = g_lastTargetSnapshot;
+            }
+            return true;
+        }
+    }
+
+    if (hasCachedSelectedTarget)
+    {
+        if (outSnapshot)
+        {
+            *outSnapshot = g_lastSelectedSpawnTargetSnapshot;
+        }
+        return true;
+    }
+
+    if (hasCurrentSelectedTarget)
+    {
+        CacheSpawnTargetSnapshot(g_lastTargetSnapshot);
+        if (outSnapshot)
+        {
+            *outSnapshot = g_lastTargetSnapshot;
+        }
+        return true;
+    }
+
+    return false;
+}
+
 bool TryResolveAndValidateSpawnTemplateFactionSelection(
     Character* target,
     SpawnTemplateSquadMode squadMode,
@@ -262,6 +384,12 @@ bool TryResolveAndValidateSpawnTemplateFactionSelection(
 bool IsCreatureSpawnTemplateData(GameData* templateData)
 {
     return templateData != 0 && templateData->type == ANIMAL_CHARACTER;
+}
+
+void ResetSpawnTargetAnchor()
+{
+    ResetTargetSnapshot(&g_lastSelectedSpawnTargetSnapshot);
+    g_hasLastSelectedSpawnTargetSnapshot = false;
 }
 
 bool ShouldEnableSpawnCreatureAgeControls()
@@ -799,10 +927,8 @@ void RefreshSpawnPreviewText()
         g_spawnSelectedSummaryText->setCaption("Selected: None");
     }
 
-    const bool hasTarget =
-        g_hasLastTargetSnapshot
-        && g_lastTargetSnapshot.hasTarget
-        && g_lastTargetSnapshot.target != 0;
+    TargetSnapshot spawnTargetSnapshot;
+    const bool hasTarget = TryGetSelectedSpawnTargetSnapshot(&spawnTargetSnapshot);
     int quantity = 0;
     const bool hasValidQuantity = TryGetSpawnTemplateQuantity(&quantity);
 
@@ -844,7 +970,7 @@ void RefreshSpawnPreviewText()
     }
 
     if (!TryGetSpawnTemplateFactionRestrictionMessage(
-            g_lastTargetSnapshot.target,
+            spawnTargetSnapshot.target,
             squadMode,
             allegiance,
             factionSelection,
@@ -859,7 +985,7 @@ void RefreshSpawnPreviewText()
     const SpawnCreatureAgePreset creatureAgePreset = GetSelectedSpawnCreatureAgePreset();
     std::stringstream preview;
     preview << "Preview: Spawn " << quantity << "x " << displayName
-            << " near " << g_lastTargetSnapshot.name;
+            << " near " << spawnTargetSnapshot.name;
     if (isCreatureTemplate)
     {
         preview << ", age: " << SpawnCreatureAgePresetToLabel(creatureAgePreset);
@@ -879,10 +1005,8 @@ void RefreshSpawnButtonState()
         return;
     }
 
-    const bool hasTarget =
-        g_hasLastTargetSnapshot
-        && g_lastTargetSnapshot.hasTarget
-        && g_lastTargetSnapshot.target != 0;
+    TargetSnapshot spawnTargetSnapshot;
+    const bool hasTarget = TryGetSelectedSpawnTargetSnapshot(&spawnTargetSnapshot);
     GameData* templateData = 0;
     int quantity = 0;
     const SpawnTemplateAllegiance allegiance = GetSelectedSpawnTemplateAllegiance();
@@ -898,7 +1022,7 @@ void RefreshSpawnButtonState()
         hasTarget
         && hasValidFactionSelection
         && TryGetSpawnTemplateFactionRestrictionMessage(
-            g_lastTargetSnapshot.target,
+            spawnTargetSnapshot.target,
             squadMode,
             allegiance,
             factionSelection,
@@ -994,16 +1118,17 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
     const char* actionId = "spawn_templates";
     LogActionRequested(actionId);
 
-    if (!g_hasLastTargetSnapshot || !g_lastTargetSnapshot.hasTarget || !g_lastTargetSnapshot.target)
+    TargetSnapshot spawnTargetSnapshot;
+    if (!TryGetSelectedSpawnTargetSnapshot(&spawnTargetSnapshot))
     {
-        LogInfoLine("event=testkit_action_result action=\"spawn_templates\" success=false reason=\"no_target\"");
+        LogInfoLine("event=testkit_action_result action=\"spawn_templates\" success=false reason=\"no_selected_target\"");
         SetStatusMessage("No target - select a character");
         return;
     }
 
-    Character* requestedTarget = g_lastTargetSnapshot.target;
-    const std::string requestedTargetName = g_lastTargetSnapshot.name;
-    const TargetSource requestedTargetSource = g_lastTargetSnapshot.source;
+    Character* requestedTarget = spawnTargetSnapshot.target;
+    const std::string requestedTargetName = spawnTargetSnapshot.name;
+    const TargetSource requestedTargetSource = spawnTargetSnapshot.source;
 
     GameData* templateData = 0;
     std::string displayName;
@@ -1107,9 +1232,14 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
     }
     LogInfoLine(result.str());
 
+    bool requestedTargetWithPlayer = false;
+    const bool hasRequestedTargetWithPlayer =
+        TryGetSpawnTargetWithPlayerState(requestedTarget, &requestedTargetWithPlayer);
     bool restoredRequestedTarget = false;
     if (applyResult.spawnedCount > 0
         && requestedTargetSource == TargetSource_Selected
+        && hasRequestedTargetWithPlayer
+        && requestedTargetWithPlayer
         && g_lastPlayerInterface)
     {
         restoredRequestedTarget =
@@ -1122,8 +1252,13 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
         line << "[investigate][spawn][selection_restore] requested_target_name=\""
              << SanitizeLogValue(requestedTargetName) << "\""
              << " source=\"" << TargetSourceToLogLabel(requestedTargetSource) << "\""
+             << " requested_target_with_player="
+             << (hasRequestedTargetWithPlayer ? (requestedTargetWithPlayer ? "true" : "false") : "unknown")
              << " attempted="
-             << ((requestedTargetSource == TargetSource_Selected && g_lastPlayerInterface) ? "true" : "false")
+             << ((requestedTargetSource == TargetSource_Selected
+                  && hasRequestedTargetWithPlayer
+                  && requestedTargetWithPlayer
+                  && g_lastPlayerInterface) ? "true" : "false")
              << " restored=" << (restoredRequestedTarget ? "true" : "false");
         if (g_hasLastTargetSnapshot && g_lastTargetSnapshot.hasTarget)
         {
