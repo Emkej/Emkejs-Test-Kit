@@ -3,9 +3,11 @@
 #include <core/Functions.h>
 #include <kenshi/GameWorld.h>
 #include <kenshi/Globals.h>
+#include <kenshi/GameDataManager.h>
 #include <kenshi/Inventory.h>
 #include <kenshi/InputHandler.h>
 #include <kenshi/Item.h>
+#include <kenshi/Gear.h>
 #include <kenshi/RootObjectFactory.h>
 #include <mygui/MyGUI_InputManager.h>
 #include <ois/OISKeyboard.h>
@@ -1083,10 +1085,512 @@ bool TryAddMoneyToTargetPlatoon(Character* target, int amount, int* beforeMoneyO
     return true;
 }
 
-bool TrySpawnItemInTargetInventory(
+int CountInventoryItemsByGameData(Inventory* inventory, GameData* itemData)
+{
+    if (!inventory || !itemData)
+    {
+        return 0;
+    }
+
+    int count = 0;
+    lektor<InventorySection*>& allSections = inventory->getAllSections();
+    for (uint32_t sectionIndex = 0; sectionIndex < allSections.size(); ++sectionIndex)
+    {
+        InventorySection* section = allSections[sectionIndex];
+        if (!section)
+        {
+            continue;
+        }
+
+        const Ogre::vector<InventorySection::SectionItem>::type& sectionItems = section->getItems();
+        for (size_t itemIndex = 0; itemIndex < sectionItems.size(); ++itemIndex)
+        {
+            Item* item = sectionItems[itemIndex].item;
+            if (!item || !item->data)
+            {
+                continue;
+            }
+
+            if (item->data != itemData && item->data->stringID != itemData->stringID)
+            {
+                continue;
+            }
+
+            count += item->quantity > 0 ? item->quantity : 1;
+        }
+    }
+
+    return count;
+}
+
+bool TryAddCreatedItemToSection(InventorySection* section, Item* item)
+{
+    if (!section || !item || !section->getEnabled())
+    {
+        return false;
+    }
+
+    return section->addItem(item, 1);
+}
+
+bool TryAddCreatedItemToInventorySections(Inventory* inventory, Item* item)
+{
+    if (!inventory || !item)
+    {
+        return false;
+    }
+
+    InventorySection* preferredSection = inventory->getSection("backpack_content");
+    if (TryAddCreatedItemToSection(preferredSection, item))
+    {
+        return true;
+    }
+
+    lektor<InventorySection*>& allSections = inventory->getAllSections();
+    for (uint32_t sectionIndex = 0; sectionIndex < allSections.size(); ++sectionIndex)
+    {
+        InventorySection* section = allSections[sectionIndex];
+        if (section == preferredSection)
+        {
+            continue;
+        }
+
+        if (TryAddCreatedItemToSection(section, item))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+GameData* GetInventorySpawnFirstListData(const GameData* itemData, const char* listName, itemType type)
+{
+    if (!itemData || !listName || !ou || !itemData->listExistsAndNotEmpty(listName))
+    {
+        return 0;
+    }
+
+    const std::string& sid = itemData->getFromList(listName, 0);
+    if (sid.empty())
+    {
+        return 0;
+    }
+
+    return ou->gamedata.getData(sid, type);
+}
+
+GameData* GetInventorySpawnWeaponModelData(const GameData* itemData, const GameData* weaponManufacturerData)
+{
+    GameData* weaponGradeData =
+        GetInventorySpawnFirstListData(weaponManufacturerData, "weapon models", MATERIAL_SPECS_WEAPON);
+    if (weaponGradeData)
+    {
+        return weaponGradeData;
+    }
+
+    weaponGradeData = GetInventorySpawnFirstListData(itemData, "weapon models", MATERIAL_SPECS_WEAPON);
+    if (weaponGradeData)
+    {
+        return weaponGradeData;
+    }
+
+    static GameData* defaultWeaponGradeData = 0;
+    if (!defaultWeaponGradeData && ou)
+    {
+        defaultWeaponGradeData = ou->gamedata.getData("913-gamedata.base", MATERIAL_SPECS_WEAPON);
+    }
+
+    return defaultWeaponGradeData;
+}
+
+int GetInventorySpawnWeaponLevel(const GameData* weaponManufacturerData, const GameData* weaponModelData)
+{
+    if (weaponManufacturerData && weaponModelData)
+    {
+        const Ogre::vector<GameDataReference>::type* weaponModels =
+            weaponManufacturerData->getReferenceListIfExists("weapon models");
+        if (weaponModels)
+        {
+            for (Ogre::vector<GameDataReference>::type::const_iterator iter = weaponModels->begin();
+                 iter != weaponModels->end();
+                 ++iter)
+            {
+                if (iter->sid == weaponModelData->stringID)
+                {
+                    const int level = iter->values.value[0];
+                    if (level > 0)
+                    {
+                        return level;
+                    }
+                }
+            }
+        }
+    }
+
+    return 40;
+}
+
+GameData* GetInventorySpawnWeaponManufacturerData(const GameData* itemData)
+{
+    if (!itemData || !ou)
+    {
+        return 0;
+    }
+
+    GameData* manufacturerData =
+        GetInventorySpawnFirstListData(itemData, "weapon manufacturers", WEAPON_MANUFACTURER);
+    if (manufacturerData)
+    {
+        return manufacturerData;
+    }
+
+    lektor<GameData*> referencingManufacturers;
+    ou->gamedata.findAllDataThatReferencesThis(
+        referencingManufacturers,
+        const_cast<GameData*>(itemData),
+        WEAPON_MANUFACTURER,
+        "weapon types");
+    if (referencingManufacturers.size() > 0 && referencingManufacturers[0])
+    {
+        return referencingManufacturers[0];
+    }
+
+    static GameData* defaultManufacturerData = 0;
+    if (!defaultManufacturerData)
+    {
+        defaultManufacturerData = ou->gamedata.getData("1057-gamedata.base", WEAPON_MANUFACTURER);
+    }
+
+    return defaultManufacturerData;
+}
+
+void LogInvestigateInventorySpawnLine(const std::string& line);
+
+void LogInvestigateInventorySpawnReferenceSummary(const GameData* state)
+{
+    if (!state)
+    {
+        return;
+    }
+
+    for (boost::unordered::unordered_map<
+             std::string,
+             Ogre::vector<GameDataReference>::type,
+             boost::hash<std::string>,
+             std::equal_to<std::string>,
+             Ogre::STLAllocator<std::pair<std::string const, Ogre::vector<GameDataReference>::type>, Ogre::GeneralAllocPolicy> >::const_iterator
+             iter = state->objectReferences.begin();
+         iter != state->objectReferences.end();
+         ++iter)
+    {
+        std::stringstream line;
+        line << "existing_weapon_state_ref"
+             << " list=\"" << SanitizeLogValue(iter->first) << "\""
+             << " count=" << iter->second.size();
+        if (!iter->second.empty())
+        {
+            line << " first_sid=\"" << SanitizeLogValue(iter->second[0].sid) << "\""
+                 << " first_val0=" << iter->second[0].values.value[0]
+                 << " first_val1=" << iter->second[0].values.value[1]
+                 << " first_val2=" << iter->second[0].values.value[2];
+        }
+        LogInvestigateInventorySpawnLine(line.str());
+    }
+}
+
+void LogInvestigateInventorySpawnExistingWeaponState(Inventory* inventory)
+{
+    if (!inventory)
+    {
+        return;
+    }
+
+    Weapon* primaryWeapon = inventory->getPrimaryWeapon();
+    if (!primaryWeapon)
+    {
+        Weapon* secondaryWeapon = inventory->getSecondaryWeapon();
+        primaryWeapon = secondaryWeapon;
+    }
+    if (!primaryWeapon)
+    {
+        LogInvestigateInventorySpawnLine("existing_weapon_state none_found=true");
+        return;
+    }
+
+    Item* weaponItem = static_cast<Item*>(primaryWeapon);
+    GameDataContainer tempContainer;
+    GameData* state = weaponItem->serialiseInInventory(&tempContainer, 0);
+    if (!state)
+    {
+        LogInvestigateInventorySpawnLine("existing_weapon_state state=null");
+        return;
+    }
+
+    std::stringstream line;
+    line << "existing_weapon_state"
+         << " item_name=\"" << SanitizeLogValue(BuildInventorySpawnOptionLabel(weaponItem->data)) << "\""
+         << " item_sid=\"" << SanitizeLogValue(weaponItem->data ? weaponItem->data->stringID : "") << "\""
+         << " state_type=" << static_cast<int>(state->type)
+         << " manufacturer=\"" << SanitizeLogValue(weaponItem->manufacturerData ? weaponItem->manufacturerData->stringID : "") << "\""
+         << " material=\"" << SanitizeLogValue(weaponItem->materialData ? weaponItem->materialData->stringID : "") << "\""
+         << " quantity=" << weaponItem->quantity
+         << " sdata_count=" << weaponItem->data->sdata.size()
+         << " state_sdata_count=" << state->sdata.size()
+         << " state_idata_count=" << state->idata.size()
+         << " state_ref_lists=" << state->objectReferences.size();
+    LogInvestigateInventorySpawnLine(line.str());
+
+    for (boost::unordered::unordered_map<
+             std::string,
+             std::string,
+             boost::hash<std::string>,
+             std::equal_to<std::string>,
+             Ogre::STLAllocator<std::pair<std::string const, std::string>, Ogre::GeneralAllocPolicy> >::const_iterator
+             iter = state->sdata.begin();
+         iter != state->sdata.end();
+         ++iter)
+    {
+        std::stringstream sdataLine;
+        sdataLine << "existing_weapon_state_sdata"
+                  << " key=\"" << SanitizeLogValue(iter->first) << "\""
+                  << " value=\"" << SanitizeLogValue(iter->second) << "\"";
+        LogInvestigateInventorySpawnLine(sdataLine.str());
+    }
+
+    for (boost::unordered::unordered_map<
+             std::string,
+             int,
+             boost::hash<std::string>,
+             std::equal_to<std::string>,
+             Ogre::STLAllocator<std::pair<std::string const, int>, Ogre::GeneralAllocPolicy> >::const_iterator
+             iter = state->idata.begin();
+         iter != state->idata.end();
+         ++iter)
+    {
+        std::stringstream idataLine;
+        idataLine << "existing_weapon_state_idata"
+                  << " key=\"" << SanitizeLogValue(iter->first) << "\""
+                  << " value=" << iter->second;
+        LogInvestigateInventorySpawnLine(idataLine.str());
+    }
+
+    LogInvestigateInventorySpawnReferenceSummary(state);
+}
+
+int GetInventorySpawnSerializedWeaponLevel(int weaponLevel)
+{
+    if (weaponLevel <= 0)
+    {
+        return 0;
+    }
+
+    int serializedLevel = (weaponLevel * 15 + 50) / 100;
+    if (serializedLevel < 0)
+    {
+        return 0;
+    }
+    if (serializedLevel > 15)
+    {
+        return 15;
+    }
+    return serializedLevel;
+}
+
+GameData* BuildInventorySpawnWeaponItemState(
+    GameDataContainer* container,
+    Character* target,
+    GameData* itemData,
+    GameData* weaponManufacturerData,
+    GameData* weaponModelData,
+    int weaponLevel)
+{
+    if (!container || !itemData)
+    {
+        return 0;
+    }
+
+    GameData* state = container->createNewData(INVENTORY_ITEM_STATE, "", "inventory_spawn_weapon_state");
+    if (!state)
+    {
+        return 0;
+    }
+
+    const hand ownerHandle = target ? target->getHandle() : hand();
+    const hand indoorsHandle = target ? target->isIndoors() : hand();
+    const int itemFunction = itemData->idata.count("item function") ? itemData->idata["item function"] : ITEM_WEAPON;
+    const int serializedLevel = GetInventorySpawnSerializedWeaponLevel(weaponLevel);
+
+    state->addString("uniform", "", "", true);
+    state->addString("color sid", "", "", true);
+    state->addString("material sid", weaponModelData ? weaponModelData->stringID : "", "", true);
+    state->addString("company sid", weaponManufacturerData ? weaponManufacturerData->stringID : "", "", true);
+    state->addString("section", "back", "", true);
+    state->addString("base data sid", itemData->stringID, "", true);
+
+    state->add("item function", itemFunction, "", true);
+    state->add("inventory y", 0, "", true);
+    state->add("insideBuildingI", indoorsHandle.index, "", true);
+    state->add("level", serializedLevel, "", true);
+    state->add("insideBuildingCS", indoorsHandle.containerSerial, "", true);
+    state->add("insideBuildingC", indoorsHandle.container, "", true);
+    state->add("insideBuildingS", indoorsHandle.serial, "", true);
+    state->add("insideBuildingTYPE", static_cast<int>(indoorsHandle.type), "", true);
+    state->add("ownedbyCS", ownerHandle.containerSerial, "", true);
+    state->add("ownedbyS", ownerHandle.serial, "", true);
+    state->add("quantity", 1, "", true);
+    state->add("ownedbyI", ownerHandle.index, "", true);
+    state->add("ownedbyC", ownerHandle.container, "", true);
+    state->add("inventory x", 0, "", true);
+    state->add("ownedbyTYPE", static_cast<int>(ownerHandle.type), "", true);
+
+    return state;
+}
+
+Item* TryCreateInventorySpawnWeaponItem(
+    Character* target,
+    GameData* itemData,
+    const hand& ownerHandle,
+    GameData* weaponManufacturerData,
+    GameData* weaponModelData,
+    int weaponLevel,
+    int itemIndex)
+{
+    struct WeaponCreateAttempt
+    {
+        const char* label;
+        GameData* arg1;
+        GameData* arg2;
+        int level;
+        bool useEmptyOwnerHandle;
+    };
+
+    const WeaponCreateAttempt attempts[] = {
+        {"model_manufacturer_level", weaponModelData, weaponManufacturerData, weaponLevel, false},
+        {"manufacturer_model_level", weaponManufacturerData, weaponModelData, weaponLevel, false},
+        {"model_null_level", weaponModelData, 0, weaponLevel, false},
+        {"manufacturer_null_level", weaponManufacturerData, 0, weaponLevel, false},
+        {"null_manufacturer_level", 0, weaponManufacturerData, weaponLevel, false},
+        {"null_null_level", 0, 0, weaponLevel, false},
+        {"model_manufacturer_zero", weaponModelData, weaponManufacturerData, 0, false},
+        {"manufacturer_model_zero", weaponManufacturerData, weaponModelData, 0, false},
+        {"null_null_zero", 0, 0, 0, false},
+        {"model_manufacturer_level_empty_owner", weaponModelData, weaponManufacturerData, weaponLevel, true},
+        {"manufacturer_model_level_empty_owner", weaponManufacturerData, weaponModelData, weaponLevel, true},
+        {"null_null_level_empty_owner", 0, 0, weaponLevel, true},
+        {"null_null_zero_empty_owner", 0, 0, 0, true},
+    };
+
+    for (size_t attemptIndex = 0; attemptIndex < sizeof(attempts) / sizeof(attempts[0]); ++attemptIndex)
+    {
+        const WeaponCreateAttempt& attempt = attempts[attemptIndex];
+        const hand& createOwnerHandle = attempt.useEmptyOwnerHandle ? hand() : ownerHandle;
+        {
+            std::stringstream line;
+            line << "weapon_create_try"
+                 << " iteration=" << itemIndex
+                 << " attempt=\"" << attempt.label << "\""
+                 << " arg1=\"" << SanitizeLogValue(attempt.arg1 ? attempt.arg1->stringID : "") << "\""
+                 << " arg2=\"" << SanitizeLogValue(attempt.arg2 ? attempt.arg2->stringID : "") << "\""
+                 << " level=" << attempt.level
+                 << " empty_owner=" << (attempt.useEmptyOwnerHandle ? "true" : "false");
+            LogInvestigateInventorySpawnLine(line.str());
+        }
+
+        Item* item =
+            ou->theFactory->createItem(itemData, createOwnerHandle, attempt.arg1, attempt.arg2, attempt.level, 0);
+        if (item)
+        {
+            std::stringstream line;
+            line << "weapon_create_try_success"
+                 << " iteration=" << itemIndex
+                 << " attempt=\"" << attempt.label << "\""
+                 << " item_ptr=" << item;
+            LogInvestigateInventorySpawnLine(line.str());
+            return item;
+        }
+    }
+
+    GameDataContainer tempContainer;
+    GameData* itemState =
+        BuildInventorySpawnWeaponItemState(&tempContainer, target, itemData, weaponManufacturerData, weaponModelData, weaponLevel);
+    if (itemState)
+    {
+        {
+            std::stringstream line;
+            line << "weapon_create_try"
+                 << " iteration=" << itemIndex
+                 << " attempt=\"item_state\""
+                 << " base_data_sid=\"" << SanitizeLogValue(itemData ? itemData->stringID : "") << "\""
+                 << " company_sid=\"" << SanitizeLogValue(weaponManufacturerData ? weaponManufacturerData->stringID : "") << "\""
+                 << " material_sid=\"" << SanitizeLogValue(weaponModelData ? weaponModelData->stringID : "") << "\""
+                 << " serialized_level=" << GetInventorySpawnSerializedWeaponLevel(weaponLevel);
+            LogInvestigateInventorySpawnLine(line.str());
+        }
+
+        Item* item = ou->theFactory->createItem(itemState);
+        if (item)
+        {
+            std::stringstream line;
+            line << "weapon_create_try_success"
+                 << " iteration=" << itemIndex
+                 << " attempt=\"item_state\""
+                 << " item_ptr=" << item;
+            LogInvestigateInventorySpawnLine(line.str());
+            return item;
+        }
+    }
+
+    return 0;
+}
+
+const char* GetInvestigateInventorySpawnStageLabel(int stage)
+{
+    switch (stage)
+    {
+    case 1:
+        return "resolve_inventory";
+    case 2:
+        return "count_before";
+    case 3:
+        return "weapon_create_item";
+    case 4:
+        return "weapon_give_item";
+    case 5:
+        return "weapon_section_fallback";
+    case 6:
+        return "general_create_item";
+    case 7:
+        return "general_add_item";
+    case 8:
+        return "count_after";
+    default:
+        return "unknown";
+    }
+}
+
+void LogInvestigateInventorySpawnLine(const std::string& line)
+{
+    LogInfoLine(std::string("[investigate][inventory_spawn] ") + line);
+}
+
+void LogInvestigateInventorySpawnException(int stage, int iteration, GameData* itemData)
+{
+    std::stringstream line;
+    line << "exception"
+         << " stage=\"" << GetInvestigateInventorySpawnStageLabel(stage) << "\""
+         << " stage_id=" << stage
+         << " iteration=" << iteration
+         << " item_name=\"" << SanitizeLogValue(BuildInventorySpawnOptionLabel(itemData)) << "\"";
+    LogInvestigateInventorySpawnLine(line.str());
+}
+
+bool TrySpawnItemInTargetInventoryImpl(
     Character* target,
     GameData* itemData,
     int quantity,
+    volatile int* investigateStageOut,
+    volatile int* investigateIterationOut,
     int* beforeCountOut,
     int* afterCountOut,
     bool* addAcceptedOut)
@@ -1109,43 +1613,184 @@ bool TrySpawnItemInTargetInventory(
         return false;
     }
 
-    __try
+    Inventory* inventory = target->getInventory();
+    *investigateStageOut = 1;
+    if (!inventory)
     {
-        Inventory* inventory = target->getInventory();
-        if (!inventory)
-        {
-            return false;
-        }
-
-        const int beforeCount = inventory->countItems(itemData);
-        Item* item = ou->theFactory->createItem(itemData, hand(), 0, 0, 0, 0);
-        if (!item)
-        {
-            return false;
-        }
-
-        const bool addAccepted = inventory->addItem(item, quantity, false, true);
-        const int afterCount = inventory->countItems(itemData);
-
-        if (beforeCountOut)
-        {
-            *beforeCountOut = beforeCount;
-        }
-        if (afterCountOut)
-        {
-            *afterCountOut = afterCount;
-        }
-        if (addAcceptedOut)
-        {
-            *addAcceptedOut = addAccepted;
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
+        LogInvestigateInventorySpawnLine("inventory=null");
         return false;
     }
 
+    const bool weaponPath = IsInventorySpawnWeaponDataType(itemData);
+    const int beforeCount = CountInventoryItemsByGameData(inventory, itemData);
+    *investigateStageOut = 2;
+    bool addAccepted = false;
+    const hand& ownerHandle = target->getHandle();
+    GameData* weaponManufacturerData = weaponPath ? GetInventorySpawnWeaponManufacturerData(itemData) : 0;
+    GameData* weaponModelData = weaponPath ? GetInventorySpawnWeaponModelData(itemData, weaponManufacturerData) : 0;
+    const int weaponLevel = weaponPath ? GetInventorySpawnWeaponLevel(weaponManufacturerData, weaponModelData) : 0;
+    const bool targetHasRoom = target->hasRoomForItem(itemData);
+    const bool inventoryHasRoom = inventory->hasRoomForItem(itemData);
+
+    {
+        std::stringstream line;
+        line << "enter"
+             << " item_name=\"" << SanitizeLogValue(BuildInventorySpawnOptionLabel(itemData)) << "\""
+             << " item_type=" << static_cast<int>(itemData->type)
+             << " quantity=" << quantity
+             << " weapon_path=" << (weaponPath ? "true" : "false")
+             << " target_has_room=" << (targetHasRoom ? "true" : "false")
+             << " inventory_has_room=" << (inventoryHasRoom ? "true" : "false")
+             << " weapon_manufacturer=\"" << SanitizeLogValue(weaponManufacturerData ? weaponManufacturerData->stringID : "") << "\""
+             << " weapon_model=\"" << SanitizeLogValue(weaponModelData ? weaponModelData->stringID : "") << "\""
+             << " weapon_level=" << weaponLevel
+             << " before_count=" << beforeCount;
+        LogInvestigateInventorySpawnLine(line.str());
+    }
+
+    if (weaponPath)
+    {
+        addAccepted = true;
+        for (int itemIndex = 0; itemIndex < quantity; ++itemIndex)
+        {
+            *investigateIterationOut = itemIndex;
+            *investigateStageOut = 3;
+            Item* item = TryCreateInventorySpawnWeaponItem(
+                target,
+                itemData,
+                ownerHandle,
+                weaponManufacturerData,
+                weaponModelData,
+                weaponLevel,
+                itemIndex);
+            if (!item)
+            {
+                LogInvestigateInventorySpawnExistingWeaponState(inventory);
+                std::stringstream line;
+                line << "weapon_create_item_null"
+                     << " iteration=" << itemIndex
+                     << " item_name=\"" << SanitizeLogValue(BuildInventorySpawnOptionLabel(itemData)) << "\""
+                     << " weapon_manufacturer=\"" << SanitizeLogValue(weaponManufacturerData ? weaponManufacturerData->stringID : "") << "\""
+                     << " weapon_model=\"" << SanitizeLogValue(weaponModelData ? weaponModelData->stringID : "") << "\"";
+                LogInvestigateInventorySpawnLine(line.str());
+                return false;
+            }
+
+            {
+                std::stringstream line;
+                line << "weapon_created"
+                     << " iteration=" << itemIndex
+                     << " item_ptr=" << item
+                     << " quantity_field=" << item->quantity
+                     << " width=" << item->itemWidth
+                     << " height=" << item->itemHeight
+                     << " section=\"" << SanitizeLogValue(item->inventorySection) << "\"";
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            *investigateStageOut = 4;
+            const bool giveAccepted = target->giveItem(item, false, true);
+            {
+                std::stringstream line;
+                line << "weapon_give_item"
+                     << " iteration=" << itemIndex
+                     << " accepted=" << (giveAccepted ? "true" : "false")
+                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
+                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            *investigateStageOut = 5;
+            const bool fallbackAccepted =
+                giveAccepted ? false : TryAddCreatedItemToInventorySections(inventory, item);
+            if (!giveAccepted)
+            {
+                std::stringstream line;
+                line << "weapon_section_fallback"
+                     << " iteration=" << itemIndex
+                     << " accepted=" << (fallbackAccepted ? "true" : "false")
+                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
+                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            if (!giveAccepted && !fallbackAccepted)
+            {
+                addAccepted = false;
+                break;
+            }
+        }
+    }
+    else
+    {
+        *investigateStageOut = 6;
+        Item* item = ou->theFactory->createItem(itemData, ownerHandle, 0, 0, 0, 0);
+        if (!item)
+        {
+            LogInvestigateInventorySpawnLine("general_create_item_null");
+            return false;
+        }
+
+        *investigateStageOut = 7;
+        addAccepted = inventory->addItem(item, quantity, false, true);
+    }
+
+    *investigateStageOut = 8;
+    const int afterCount = CountInventoryItemsByGameData(inventory, itemData);
+
+    {
+        std::stringstream line;
+        line << "exit"
+             << " add_accepted=" << (addAccepted ? "true" : "false")
+             << " after_count=" << afterCount
+             << " observed_delta=" << (afterCount - beforeCount);
+        LogInvestigateInventorySpawnLine(line.str());
+    }
+
+    if (beforeCountOut)
+    {
+        *beforeCountOut = beforeCount;
+    }
+    if (afterCountOut)
+    {
+        *afterCountOut = afterCount;
+    }
+    if (addAcceptedOut)
+    {
+        *addAcceptedOut = addAccepted;
+    }
+
     return true;
+}
+
+bool TrySpawnItemInTargetInventory(
+    Character* target,
+    GameData* itemData,
+    int quantity,
+    int* beforeCountOut,
+    int* afterCountOut,
+    bool* addAcceptedOut)
+{
+    volatile int investigateStage = 0;
+    volatile int investigateIteration = -1;
+
+    __try
+    {
+        return TrySpawnItemInTargetInventoryImpl(
+            target,
+            itemData,
+            quantity,
+            &investigateStage,
+            &investigateIteration,
+            beforeCountOut,
+            afterCountOut,
+            addAcceptedOut);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        LogInvestigateInventorySpawnException(investigateStage, investigateIteration, itemData);
+        return false;
+    }
 }
 }
 
