@@ -580,7 +580,7 @@ void FinalizePanelDrag(const char* source)
         {
             line << " source=\"" << source << "\"";
         }
-        LogInfoLine(line.str());
+        LogDebugLine(line.str());
     }
 
     g_panelDragMoved = false;
@@ -2100,7 +2100,7 @@ void CreatePanelWidgets()
     InitializePanelWidgets();
     ApplyPanelLayout();
     g_loggedPanelCreateFailure = false;
-    LogInfoLine(std::string("event=testkit_panel_created visible=") + (!g_panelHidden ? "true" : "false"));
+    LogDebugLine(std::string("event=testkit_panel_created visible=") + (!g_panelHidden ? "true" : "false"));
 }
 
 void EnsurePanel(PlayerInterface* thisptr)
@@ -2163,7 +2163,7 @@ void TickPanelToggleHotkey()
     {
         std::stringstream line;
         line << "event=testkit_hotkey_triggered hotkey=\"" << g_hotkeyDisplay << "\"";
-        LogInfoLine(line.str());
+        LogDebugLine(line.str());
         TogglePanelHidden("hotkey");
     }
 

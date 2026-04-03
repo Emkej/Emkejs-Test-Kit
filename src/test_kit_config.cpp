@@ -2531,7 +2531,7 @@ void LoadConfig()
         {
             if (TryWriteTextFile(configPath, configText))
             {
-                LogInfoLine("saved locations config initialized entries=0");
+                LogDebugLine("saved locations config initialized entries=0");
             }
             else
             {
@@ -2565,7 +2565,7 @@ void LoadConfig()
          << " close_button_size=" << g_panelCloseButtonSize
          << " body_overlap=" << g_panelBodyOverlap
          << " saved_locations=" << g_savedLocations.size();
-    LogInfoLine(info.str());
+    LogDebugLine(info.str());
 }
 
 void EnsureModHubClientConfigured()
