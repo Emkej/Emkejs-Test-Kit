@@ -26,6 +26,12 @@ enum SpawnTemplateAllegiance
     SpawnTemplateAllegiance_Hostile = 3
 };
 
+enum SpawnTemplateFactionMode
+{
+    SpawnTemplateFactionMode_None = 0,
+    SpawnTemplateFactionMode_Custom = 1
+};
+
 enum SpawnTemplateSquadMode
 {
     SpawnTemplateSquadMode_SeparateSquad = 0,
@@ -72,18 +78,43 @@ struct SpawnTemplateApplyResult
     std::string message;
 };
 
+struct SpawnTemplateFactionSelection
+{
+    SpawnTemplateFactionSelection()
+        : mode(SpawnTemplateFactionMode_None)
+        , customFaction(0)
+    {
+    }
+
+    SpawnTemplateFactionMode mode;
+    Faction* customFaction;
+    std::string customFactionQuery;
+    std::string customFactionLabel;
+};
+
 extern const int kSpawnTemplateQuantityMax;
 
 void EnsureSpawnTemplateOptionsLoaded();
+const char* SpawnTemplateFactionModeToLabel(SpawnTemplateFactionMode factionMode);
+SpawnTemplateFactionMode GetSelectedSpawnTemplateFactionMode();
+bool TryResolveSelectedSpawnTemplateFactionSelection(
+    SpawnTemplateFactionSelection* outSelection,
+    std::string* outErrorMessage);
+std::string DescribeSpawnTemplateFactionSelection(const SpawnTemplateFactionSelection& selection);
 void RefreshSpawnTemplateList();
 void RefreshSpawnCreatureAgeControlState();
+void RefreshSpawnFactionControlState();
 void RefreshSpawnButtonState();
 void RefreshSpawnPreviewText();
+bool ShouldShowSpawnCustomFactionControls();
 void OnSpawnSearchTextChanged(MyGUI::EditBox*);
 void OnSpawnCategoryChanged(MyGUI::ComboBox*, size_t);
 void OnSpawnQuantityTextChanged(MyGUI::EditBox*);
 void OnSpawnAllegianceChanged(MyGUI::ComboBox*, size_t);
+void OnSpawnFactionModeChanged(MyGUI::ComboBox*, size_t);
 void OnSpawnRadiusChanged(MyGUI::ComboBox*, size_t);
+void OnSpawnCustomFactionTextChanged(MyGUI::EditBox*);
+void OnSpawnCustomFactionResultsSelectionChanged(MyGUI::ListBox*, size_t);
 void OnSpawnCreatureAgeChanged(MyGUI::ComboBox*, size_t);
 void OnSpawnModeChanged(MyGUI::ComboBox*, size_t);
 void OnSpawnResultsSelectionChanged(MyGUI::ListBox*, size_t);

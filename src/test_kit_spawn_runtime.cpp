@@ -1,4 +1,5 @@
 #include "test_kit_spawn_runtime.h"
+#include "test_kit_spawn_faction_probe.h"
 
 #include <core/Functions.h>
 #include <kenshi/Faction.h>
@@ -1409,6 +1410,51 @@ const char* GetSpawnTemplateModeRestrictionMessage(SpawnTemplateSquadMode squadM
     return "Selected mode is unavailable";
 }
 
+bool DoesSpawnTemplateFactionMatchRequirement(Faction* selectedFaction, Faction* requiredFaction)
+{
+    return selectedFaction != 0 && requiredFaction != 0 && selectedFaction == requiredFaction;
+}
+
+const char* GetSpawnTemplateFactionRestrictionMessage(
+    SpawnTemplateSquadMode squadMode,
+    SpawnTemplateAllegiance allegiance,
+    Faction* selectedFaction,
+    Faction* targetFaction,
+    Faction* playerFaction)
+{
+    if (squadMode == SpawnTemplateSquadMode_SeparateSquad
+        && DoesSpawnTemplateFactionMatchRequirement(selectedFaction, targetFaction))
+    {
+        return "Independent can't use the target faction; use Add to target squad";
+    }
+
+    if (squadMode == SpawnTemplateSquadMode_AddToTargetSquad
+        && !DoesSpawnTemplateFactionMatchRequirement(selectedFaction, targetFaction))
+    {
+        return "Add to target squad requires the target faction";
+    }
+
+    switch (allegiance)
+    {
+    case SpawnTemplateAllegiance_SameAsTarget:
+        if (!DoesSpawnTemplateFactionMatchRequirement(selectedFaction, targetFaction))
+        {
+            return "Same as target requires the target faction";
+        }
+        break;
+    case SpawnTemplateAllegiance_FriendlyPlayer:
+        if (!DoesSpawnTemplateFactionMatchRequirement(selectedFaction, playerFaction))
+        {
+            return "Friendly (player) requires the player faction";
+        }
+        break;
+    default:
+        break;
+    }
+
+    return 0;
+}
+
 bool TryResolveSpawnAllegianceFaction(
     Character* target,
     SpawnTemplateAllegiance allegiance,
@@ -1539,6 +1585,46 @@ void TryFinalizeSpawnedCharacterPosition(Character* spawnedCharacter)
 }
 } // namespace
 
+bool TryGetSpawnTemplateFactionRestrictionMessage(
+    Character* target,
+    SpawnTemplateSquadMode squadMode,
+    SpawnTemplateAllegiance allegiance,
+    const SpawnTemplateFactionSelection& factionSelection,
+    std::string* outMessage)
+{
+    if (!outMessage)
+    {
+        return false;
+    }
+
+    outMessage->clear();
+    if (factionSelection.mode == SpawnTemplateFactionMode_Custom && !factionSelection.customFaction)
+    {
+        *outMessage = "selected custom faction unavailable";
+        return false;
+    }
+
+    Faction* targetFaction = 0;
+    TryResolveTargetSpawnFaction(target, &targetFaction);
+    Faction* playerFaction = 0;
+    TryResolvePlayerSpawnFaction(&playerFaction);
+    Faction* selectedFaction =
+        factionSelection.mode == SpawnTemplateFactionMode_Custom ? factionSelection.customFaction : 0;
+    const char* restrictionMessage = GetSpawnTemplateFactionRestrictionMessage(
+        squadMode,
+        allegiance,
+        selectedFaction,
+        targetFaction,
+        playerFaction);
+    if (!restrictionMessage)
+    {
+        return true;
+    }
+
+    *outMessage = restrictionMessage;
+    return false;
+}
+
 bool TrySpawnTemplateNearTarget(
     GameData* templateData,
     const std::string& templateName,
@@ -1546,6 +1632,7 @@ bool TrySpawnTemplateNearTarget(
     SpawnTemplateRadiusPreset radiusPreset,
     SpawnTemplateSquadMode squadMode,
     SpawnTemplateAllegiance allegiance,
+    const SpawnTemplateFactionSelection& factionSelection,
     SpawnCreatureAgePreset creatureAgePreset,
     int quantity,
     SpawnTemplateApplyResult* outResult)
@@ -1567,6 +1654,7 @@ bool TrySpawnTemplateNearTarget(
     const bool isCreatureTemplate = IsCreatureSpawnTemplateData(templateData);
     const float requestedAge0To1 =
         isCreatureTemplate ? ResolveSpawnCreatureAge0To1(creatureAgePreset) : 1.0f;
+    const bool naturalFactionProbeEnabled = ShouldUseSpawnTemplateNaturalFactionProbe();
 
     if (!templateData || !target || quantity <= 0 || !ou || !ou->theFactory)
     {
@@ -1590,33 +1678,13 @@ bool TrySpawnTemplateNearTarget(
         return false;
     }
 
+    LogSpawnTemplateFactionProbe(templateData, templateName, target);
+
     if (!TryResolveTargetSpawnFaction(target, &targetFaction))
     {
         outResult->message = "target faction unavailable";
         LogSpawnInvestigationReject(
             "target_faction_unavailable",
-            templateName,
-            target,
-            radiusPreset,
-            squadMode,
-            allegiance,
-            isCreatureTemplate,
-            creatureAgePreset,
-            requestedAge0To1,
-            quantity,
-            targetFaction,
-            desiredFaction,
-            emptyFaction,
-            createFaction,
-            targetPlatoon);
-        return false;
-    }
-
-    if (!TryResolveSpawnAllegianceFaction(target, allegiance, &desiredFaction) || !desiredFaction)
-    {
-        outResult->message = "spawn allegiance unavailable";
-        LogSpawnInvestigationReject(
-            "spawn_allegiance_unavailable",
             templateName,
             target,
             radiusPreset,
@@ -1657,6 +1725,27 @@ bool TrySpawnTemplateNearTarget(
         return false;
     }
 
+    if (!TryGetSpawnTemplateFactionRestrictionMessage(target, squadMode, allegiance, factionSelection, &outResult->message))
+    {
+        LogSpawnInvestigationReject(
+            "spawn_faction_incompatible",
+            templateName,
+            target,
+            radiusPreset,
+            squadMode,
+            allegiance,
+            isCreatureTemplate,
+            creatureAgePreset,
+            requestedAge0To1,
+            quantity,
+            targetFaction,
+            desiredFaction,
+            emptyFaction,
+            createFaction,
+            targetPlatoon);
+        return false;
+    }
+
     if (addToTargetSquad)
     {
         if (!targetPlatoon)
@@ -1680,12 +1769,42 @@ bool TrySpawnTemplateNearTarget(
                 targetPlatoon);
             return false;
         }
+    }
 
-        if (!targetFaction || desiredFaction != targetFaction)
+    if (factionSelection.mode == SpawnTemplateFactionMode_None)
+    {
+        if (!TryResolveEmptySpawnFaction(&emptyFaction) || !emptyFaction)
         {
-            outResult->message = "selected allegiance can't join target squad";
+            outResult->message = "spawn faction unavailable";
             LogSpawnInvestigationReject(
-                "selected_allegiance_cant_join_target_squad",
+                "spawn_faction_unavailable",
+                templateName,
+                target,
+                radiusPreset,
+                squadMode,
+                allegiance,
+                isCreatureTemplate,
+                creatureAgePreset,
+                requestedAge0To1,
+                quantity,
+                targetFaction,
+                desiredFaction,
+                emptyFaction,
+                createFaction,
+                targetPlatoon);
+            return false;
+        }
+
+        desiredFaction = emptyFaction;
+    }
+    else
+    {
+        desiredFaction = factionSelection.customFaction;
+        if (!desiredFaction)
+        {
+            outResult->message = "custom faction unavailable";
+            LogSpawnInvestigationReject(
+                "custom_faction_unavailable",
                 templateName,
                 target,
                 radiusPreset,
@@ -1704,34 +1823,7 @@ bool TrySpawnTemplateNearTarget(
         }
     }
 
-    if (!addToTargetSquad)
-    {
-        TryResolveEmptySpawnFaction(&emptyFaction);
-    }
-
-    createFaction = addToTargetSquad ? desiredFaction : (emptyFaction ? emptyFaction : desiredFaction);
-    if (!createFaction)
-    {
-        outResult->message = "spawn faction unavailable";
-        LogSpawnInvestigationReject(
-            "spawn_faction_unavailable",
-            templateName,
-            target,
-            radiusPreset,
-            squadMode,
-            allegiance,
-            isCreatureTemplate,
-            creatureAgePreset,
-            requestedAge0To1,
-            quantity,
-            targetFaction,
-            desiredFaction,
-            emptyFaction,
-            createFaction,
-            targetPlatoon);
-        return false;
-    }
-
+    createFaction = desiredFaction;
     LogSpawnInvestigationBegin(
         templateName,
         target,
@@ -1785,6 +1877,7 @@ bool TrySpawnTemplateNearTarget(
                      << " allegiance=\"" << SanitizeLogValue(SpawnTemplateAllegianceToLabel(allegiance)) << "\""
                      << " radius=\"" << SanitizeLogValue(SpawnTemplateRadiusPresetToLabel(radiusPreset)) << "\""
                      << " mode=\"" << SanitizeLogValue(SpawnTemplateSquadModeToLabel(squadMode)) << "\""
+                     << " natural_faction_probe_enabled=" << (naturalFactionProbeEnabled ? "true" : "false")
                      << " creature_template=" << (isCreatureTemplate ? "true" : "false")
                      << " creature_age_preset=\"" << SanitizeLogValue(SpawnCreatureAgePresetToLabel(creatureAgePreset)) << "\""
                      << " requested_age_0to1=" << requestedAge0To1
@@ -1802,6 +1895,7 @@ bool TrySpawnTemplateNearTarget(
                 AppendCharacterProbeLogFields(line, "target", target);
                 AppendFactionLogFields(line, "desired_faction", desiredFaction);
                 AppendFactionLogFields(line, "create_faction", createFaction);
+                AppendFactionLogFields(line, "selected_custom_faction", factionSelection.customFaction);
                 LogInfoLine(line.str());
             }
             continue;
@@ -1810,13 +1904,25 @@ bool TrySpawnTemplateNearTarget(
         ++outResult->validSpawnCount;
 
         ActivePlatoon* spawnGroupContainerBeforePrepare = spawnGroupContainer;
-        RootObjectContainer* createOwnerContainer = addToTargetSquad ? targetPlatoon : 0;
+        RootObjectContainer* createOwnerContainer = addToTargetSquad ? targetPlatoon : spawnGroupContainer;
+        const bool naturalFactionProbeAttempted = naturalFactionProbeEnabled;
+        bool naturalFactionProbeFallbackUsed = false;
         Character* spawnedCharacter = TryCreateSpawnedCharacter(
             templateData,
-            createFaction,
+            naturalFactionProbeEnabled ? 0 : createFaction,
             createOwnerContainer,
             resolvedPosition,
             requestedAge0To1);
+        if (!spawnedCharacter && naturalFactionProbeEnabled)
+        {
+            naturalFactionProbeFallbackUsed = true;
+            spawnedCharacter = TryCreateSpawnedCharacter(
+                templateData,
+                createFaction,
+                createOwnerContainer,
+                resolvedPosition,
+                requestedAge0To1);
+        }
         bool usedTargetPlatoonFallback = false;
         if (!spawnedCharacter)
         {
@@ -1829,6 +1935,9 @@ bool TrySpawnTemplateNearTarget(
                      << " allegiance=\"" << SanitizeLogValue(SpawnTemplateAllegianceToLabel(allegiance)) << "\""
                      << " radius=\"" << SanitizeLogValue(SpawnTemplateRadiusPresetToLabel(radiusPreset)) << "\""
                      << " mode=\"" << SanitizeLogValue(SpawnTemplateSquadModeToLabel(squadMode)) << "\""
+                     << " natural_faction_probe_enabled=" << (naturalFactionProbeEnabled ? "true" : "false")
+                     << " natural_faction_probe_attempted=" << (naturalFactionProbeAttempted ? "true" : "false")
+                     << " natural_faction_probe_fallback_used=" << (naturalFactionProbeFallbackUsed ? "true" : "false")
                      << " creature_template=" << (isCreatureTemplate ? "true" : "false")
                      << " creature_age_preset=\"" << SanitizeLogValue(SpawnCreatureAgePresetToLabel(creatureAgePreset)) << "\""
                      << " requested_age_0to1=" << requestedAge0To1
@@ -1856,6 +1965,7 @@ bool TrySpawnTemplateNearTarget(
                 AppendCharacterProbeLogFields(line, "target", target);
                 AppendFactionLogFields(line, "desired_faction", desiredFaction);
                 AppendFactionLogFields(line, "create_faction", createFaction);
+                AppendFactionLogFields(line, "selected_custom_faction", factionSelection.customFaction);
                 AppendPlatoonLogFields(line, "resolved_target_platoon", targetPlatoon);
                 LogInfoLine(line.str());
             }
@@ -1874,6 +1984,15 @@ bool TrySpawnTemplateNearTarget(
             appliedCreatureAge = TryApplySpawnedCharacterAge(spawnedCharacter, requestedAge0To1);
         }
 
+        if (naturalFactionProbeEnabled && !naturalFactionProbeFallbackUsed)
+        {
+            LogSpawnTemplateFactionProbeComparison(
+                templateData,
+                templateName,
+                spawnedCharacter,
+                "natural_before_assign");
+        }
+
         TryAssignSpawnedCharacterFaction(
             spawnedCharacter,
             desiredFaction,
@@ -1882,7 +2001,15 @@ bool TrySpawnTemplateNearTarget(
 
         Faction* spawnedFactionAfterAssign = 0;
         TryResolveCharacterFaction(spawnedCharacter, &spawnedFactionAfterAssign);
+        LogSpawnTemplateFactionProbeComparison(templateData, templateName, spawnedCharacter, "after_assign");
         ActivePlatoon* spawnedPlatoonAfterAssign = TryGetCharacterActivePlatoon(spawnedCharacter);
+        if (!addToTargetSquad
+            && !spawnGroupContainer
+            && spawnedPlatoonAfterAssign
+            && spawnedPlatoonAfterAssign != targetPlatoon)
+        {
+            spawnGroupContainer = spawnedPlatoonAfterAssign;
+        }
         bool spawnedWithPlayerAfterAssign = false;
         const bool hasSpawnedWithPlayerAfterAssign =
             TryResolveCharacterWithPlayer(spawnedCharacter, &spawnedWithPlayerAfterAssign);
@@ -1920,6 +2047,9 @@ bool TrySpawnTemplateNearTarget(
                  << " allegiance=\"" << SanitizeLogValue(SpawnTemplateAllegianceToLabel(allegiance)) << "\""
                  << " radius=\"" << SanitizeLogValue(SpawnTemplateRadiusPresetToLabel(radiusPreset)) << "\""
                  << " mode=\"" << SanitizeLogValue(SpawnTemplateSquadModeToLabel(squadMode)) << "\""
+                 << " natural_faction_probe_enabled=" << (naturalFactionProbeEnabled ? "true" : "false")
+                 << " natural_faction_probe_attempted=" << (naturalFactionProbeAttempted ? "true" : "false")
+                 << " natural_faction_probe_fallback_used=" << (naturalFactionProbeFallbackUsed ? "true" : "false")
                  << " creature_template=" << (isCreatureTemplate ? "true" : "false")
                  << " creature_age_preset=\"" << SanitizeLogValue(SpawnCreatureAgePresetToLabel(creatureAgePreset)) << "\""
                  << " requested_age_0to1=" << requestedAge0To1
@@ -1971,6 +2101,7 @@ bool TrySpawnTemplateNearTarget(
             AppendFactionLogFields(line, "resolved_target_faction", targetFaction);
             AppendFactionLogFields(line, "desired_faction", desiredFaction);
             AppendFactionLogFields(line, "create_faction", createFaction);
+            AppendFactionLogFields(line, "selected_custom_faction", factionSelection.customFaction);
             AppendFactionLogFields(line, "spawned_faction_before_assign", spawnedFactionBeforeAssign);
             AppendFactionLogFields(line, "spawned_faction_after_assign", spawnedFactionAfterAssign);
             AppendPlatoonLogFields(line, "resolved_target_platoon", targetPlatoon);

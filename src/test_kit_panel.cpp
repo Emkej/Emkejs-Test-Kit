@@ -79,6 +79,7 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     const bool teleportVisible = bodyVisible && g_activePanelTab == PanelTab_Teleport;
     const bool inventoryVisible = bodyVisible && g_activePanelTab == PanelTab_Inventory;
     const bool spawnVisible = bodyVisible && g_activePanelTab == PanelTab_Spawn;
+    const bool spawnCustomFactionVisible = spawnVisible && ShouldShowSpawnCustomFactionControls();
 
     UpdatePanelTabButtonCaptions();
 
@@ -166,6 +167,11 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_spawnSelectedSummaryText, spawnVisible);
     SetWidgetVisible(g_spawnQuantityLabelText, spawnVisible);
     SetWidgetVisible(g_spawnQuantityEdit, spawnVisible);
+    SetWidgetVisible(g_spawnFactionLabelText, spawnVisible);
+    SetWidgetVisible(g_spawnFactionDropdown, spawnVisible);
+    SetWidgetVisible(g_spawnCustomFactionLabelText, spawnCustomFactionVisible);
+    SetWidgetVisible(g_spawnCustomFactionSearchEdit, spawnCustomFactionVisible);
+    SetWidgetVisible(g_spawnCustomFactionResultsList, spawnCustomFactionVisible);
     SetWidgetVisible(g_spawnAllegianceLabelText, spawnVisible);
     SetWidgetVisible(g_spawnAllegianceDropdown, spawnVisible);
     SetWidgetVisible(g_spawnRadiusLabelText, spawnVisible);
@@ -276,7 +282,7 @@ int GetActivePanelContentBottomInBodyCoords()
     case PanelTab_Spawn:
         return GetWidgetBottom(
             g_spawnPreviewText,
-            GetWidgetBottom(g_spawnCharactersButton, 676 - bodyTop));
+            GetWidgetBottom(g_spawnCharactersButton, 844 - bodyTop));
     case PanelTab_Health:
     default:
         bottom = GetWidgetBottom(g_forceDyingButton, 512 - bodyTop);
@@ -772,6 +778,11 @@ void ResetPanelWidgetPointers()
     g_spawnSelectedSummaryText = 0;
     g_spawnQuantityLabelText = 0;
     g_spawnQuantityEdit = 0;
+    g_spawnFactionLabelText = 0;
+    g_spawnFactionDropdown = 0;
+    g_spawnCustomFactionLabelText = 0;
+    g_spawnCustomFactionSearchEdit = 0;
+    g_spawnCustomFactionResultsList = 0;
     g_spawnAllegianceLabelText = 0;
     g_spawnAllegianceDropdown = 0;
     g_spawnRadiusLabelText = 0;
@@ -1056,6 +1067,11 @@ bool HasAllPanelWidgets()
         && g_spawnSelectedSummaryText
         && g_spawnQuantityLabelText
         && g_spawnQuantityEdit
+        && g_spawnFactionLabelText
+        && g_spawnFactionDropdown
+        && g_spawnCustomFactionLabelText
+        && g_spawnCustomFactionSearchEdit
+        && g_spawnCustomFactionResultsList
         && g_spawnAllegianceLabelText
         && g_spawnAllegianceDropdown
         && g_spawnRadiusLabelText
@@ -1213,6 +1229,8 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_spawnResultCountText);
     ConfigureTextWidget(g_spawnSelectedSummaryText);
     ConfigureTextWidget(g_spawnQuantityLabelText);
+    ConfigureTextWidget(g_spawnFactionLabelText);
+    ConfigureTextWidget(g_spawnCustomFactionLabelText);
     ConfigureTextWidget(g_spawnAllegianceLabelText);
     ConfigureTextWidget(g_spawnRadiusLabelText);
     ConfigureTextWidget(g_spawnCreatureAgeLabelText);
@@ -1230,8 +1248,10 @@ void InitializePanelWidgets()
     ConfigureEditBoxWidget(g_itemQuantityEdit);
     ConfigureEditBoxWidget(g_spawnSearchEdit);
     ConfigureEditBoxWidget(g_spawnQuantityEdit);
+    ConfigureEditBoxWidget(g_spawnCustomFactionSearchEdit);
     ConfigureComboBoxWidget(g_itemCategoryDropdown);
     ConfigureComboBoxWidget(g_spawnCategoryDropdown);
+    ConfigureComboBoxWidget(g_spawnFactionDropdown);
     ConfigureComboBoxWidget(g_spawnAllegianceDropdown);
     ConfigureComboBoxWidget(g_spawnRadiusDropdown);
     ConfigureComboBoxWidget(g_spawnCreatureAgeDropdown);
@@ -1240,6 +1260,7 @@ void InitializePanelWidgets()
     ConfigureListBoxWidget(g_statsResultsList);
     ConfigureListBoxWidget(g_itemSearchResultsList);
     ConfigureListBoxWidget(g_spawnResultsList);
+    ConfigureListBoxWidget(g_spawnCustomFactionResultsList);
 
     g_savedLocationsRowsRoot->setNeedMouseFocus(false);
     g_savedLocationsRowsRoot->setInheritsPick(true);
@@ -1285,6 +1306,8 @@ void InitializePanelWidgets()
         caption << "Quantity (1-" << kSpawnTemplateQuantityMax << ")";
         g_spawnQuantityLabelText->setCaption(caption.str());
     }
+    g_spawnFactionLabelText->setCaption("Faction");
+    g_spawnCustomFactionLabelText->setCaption("Custom faction");
     g_spawnAllegianceLabelText->setCaption("Allegiance");
     g_spawnRadiusLabelText->setCaption("Radius");
     g_spawnCreatureAgeLabelText->setCaption("Age (creatures)");
@@ -1362,6 +1385,15 @@ void InitializePanelWidgets()
     g_spawnQuantityEdit->setEditStatic(false);
     g_spawnQuantityEdit->setMaxTextLength(2);
     g_spawnQuantityEdit->setOnlyText("1");
+    g_spawnFactionDropdown->removeAllItems();
+    g_spawnFactionDropdown->addItem("None");
+    g_spawnFactionDropdown->addItem("Custom");
+    g_spawnFactionDropdown->setIndexSelected(0);
+    g_spawnCustomFactionSearchEdit->setEditStatic(false);
+    g_spawnCustomFactionSearchEdit->setMaxTextLength(64);
+    g_spawnCustomFactionSearchEdit->setOnlyText("");
+    g_spawnCustomFactionResultsList->removeAllItems();
+    g_spawnCustomFactionResultsList->clearIndexSelected();
     g_spawnAllegianceDropdown->removeAllItems();
     g_spawnAllegianceDropdown->addItem("Same as target");
     g_spawnAllegianceDropdown->addItem("Friendly (player)");
@@ -1388,6 +1420,7 @@ void InitializePanelWidgets()
     EnsureSpawnTemplateOptionsLoaded();
     RefreshSpawnTemplateList();
     RefreshSpawnCreatureAgeControlState();
+    RefreshSpawnFactionControlState();
     UpdateDangerousActionButtonCaptions();
     UpdateCollapseButtonCaption();
     RefreshStatusWidget();
@@ -1447,6 +1480,9 @@ void InitializePanelWidgets()
     g_spawnSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnSpawnSearchTextChanged);
     g_spawnResultsList->eventListChangePosition += MyGUI::newDelegate(&OnSpawnResultsSelectionChanged);
     g_spawnQuantityEdit->eventEditTextChange += MyGUI::newDelegate(&OnSpawnQuantityTextChanged);
+    g_spawnFactionDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnSpawnFactionModeChanged);
+    g_spawnCustomFactionSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnSpawnCustomFactionTextChanged);
+    g_spawnCustomFactionResultsList->eventListChangePosition += MyGUI::newDelegate(&OnSpawnCustomFactionResultsSelectionChanged);
     g_spawnAllegianceDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnSpawnAllegianceChanged);
     g_spawnRadiusDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnSpawnRadiusChanged);
     g_spawnCreatureAgeDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnSpawnCreatureAgeChanged);
@@ -2045,13 +2081,33 @@ void CreatePanelWidgets()
         "Kenshi_ComboBox",
         BuildBodyCoord(20, 582, 156, 30),
         MyGUI::Align::Default);
+    g_spawnFactionLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 618, 156, 18),
+        MyGUI::Align::Default);
+    g_spawnFactionDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
+        "Kenshi_ComboBox",
+        BuildBodyCoord(20, 640, 156, 30),
+        MyGUI::Align::Default);
     g_spawnCreatureAgeLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 618, kPanelWidth - 40, 18),
+        BuildBodyCoord(184, 618, 156, 18),
         MyGUI::Align::Default);
     g_spawnCreatureAgeDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        BuildBodyCoord(20, 640, kPanelWidth - 40, 30),
+        BuildBodyCoord(184, 640, 156, 30),
+        MyGUI::Align::Default);
+    g_spawnCustomFactionLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 676, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_spawnCustomFactionSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
+        "Kenshi_EditBox",
+        BuildBodyCoord(20, 698, kPanelWidth - 40, 28),
+        MyGUI::Align::Default);
+    g_spawnCustomFactionResultsList = bodyParent->createWidget<MyGUI::ListBox>(
+        "Kenshi_ListBox",
+        BuildBodyCoord(20, 730, kPanelWidth - 40, 54),
         MyGUI::Align::Default);
     g_spawnModeLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
@@ -2063,11 +2119,11 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_spawnCharactersButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 676, 156, 28),
+        BuildBodyCoord(184, 792, 156, 28),
         MyGUI::Align::Default);
     g_spawnPreviewText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 710, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 826, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_dangerousSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",

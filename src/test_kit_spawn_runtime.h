@@ -4,6 +4,13 @@
 
 namespace test_kit
 {
+bool TryGetSpawnTemplateFactionRestrictionMessage(
+    Character* target,
+    SpawnTemplateSquadMode squadMode,
+    SpawnTemplateAllegiance allegiance,
+    const SpawnTemplateFactionSelection& factionSelection,
+    std::string* outMessage);
+
 bool TrySpawnTemplateNearTarget(
     GameData* templateData,
     const std::string& templateName,
@@ -11,6 +18,7 @@ bool TrySpawnTemplateNearTarget(
     SpawnTemplateRadiusPreset radiusPreset,
     SpawnTemplateSquadMode squadMode,
     SpawnTemplateAllegiance allegiance,
+    const SpawnTemplateFactionSelection& factionSelection,
     SpawnCreatureAgePreset creatureAgePreset,
     int quantity,
     SpawnTemplateApplyResult* outResult);

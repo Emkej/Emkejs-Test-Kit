@@ -49,6 +49,12 @@ SpawnTemplateAllegiance GetSelectedSpawnTemplateAllegiance();
 SpawnTemplateRadiusPreset GetSelectedSpawnTemplateRadiusPreset();
 SpawnTemplateSquadMode GetSelectedSpawnTemplateSquadMode();
 SpawnCreatureAgePreset GetSelectedSpawnCreatureAgePreset();
+bool TryResolveAndValidateSpawnTemplateFactionSelection(
+    Character* target,
+    SpawnTemplateSquadMode squadMode,
+    SpawnTemplateAllegiance allegiance,
+    SpawnTemplateFactionSelection* outSelection,
+    std::string* outMessage);
 
 const char* SpawnTemplateCategoryToTypeLabel(SpawnTemplateCategory category)
 {
@@ -226,6 +232,31 @@ SpawnTemplateSquadMode GetSelectedSpawnTemplateSquadMode()
     default:
         return SpawnTemplateSquadMode_SeparateSquad;
     }
+}
+
+bool TryResolveAndValidateSpawnTemplateFactionSelection(
+    Character* target,
+    SpawnTemplateSquadMode squadMode,
+    SpawnTemplateAllegiance allegiance,
+    SpawnTemplateFactionSelection* outSelection,
+    std::string* outMessage)
+{
+    if (!TryResolveSelectedSpawnTemplateFactionSelection(outSelection, outMessage))
+    {
+        return false;
+    }
+
+    if (!target)
+    {
+        return true;
+    }
+
+    return TryGetSpawnTemplateFactionRestrictionMessage(
+        target,
+        squadMode,
+        allegiance,
+        outSelection ? *outSelection : SpawnTemplateFactionSelection(),
+        outMessage);
 }
 
 bool IsCreatureSpawnTemplateData(GameData* templateData)
@@ -791,6 +822,14 @@ void RefreshSpawnPreviewText()
 
     const SpawnTemplateAllegiance allegiance = GetSelectedSpawnTemplateAllegiance();
     const SpawnTemplateSquadMode squadMode = GetSelectedSpawnTemplateSquadMode();
+    SpawnTemplateFactionSelection factionSelection;
+    std::string factionMessage;
+    if (!TryResolveSelectedSpawnTemplateFactionSelection(&factionSelection, &factionMessage))
+    {
+        g_spawnPreviewText->setCaption(std::string("Preview: ") + factionMessage);
+        return;
+    }
+
     if (!IsSpawnTemplateModeAllowed(squadMode, allegiance))
     {
         g_spawnPreviewText->setCaption(
@@ -801,6 +840,17 @@ void RefreshSpawnPreviewText()
     if (!hasTarget)
     {
         g_spawnPreviewText->setCaption("Preview: Select a target to place " + displayName);
+        return;
+    }
+
+    if (!TryGetSpawnTemplateFactionRestrictionMessage(
+            g_lastTargetSnapshot.target,
+            squadMode,
+            allegiance,
+            factionSelection,
+            &factionMessage))
+    {
+        g_spawnPreviewText->setCaption(std::string("Preview: ") + factionMessage);
         return;
     }
 
@@ -815,6 +865,7 @@ void RefreshSpawnPreviewText()
         preview << ", age: " << SpawnCreatureAgePresetToLabel(creatureAgePreset);
     }
     preview
+            << ", faction: " << DescribeSpawnTemplateFactionSelection(factionSelection)
             << ", allegiance: " << SpawnTemplateAllegianceToLabel(allegiance)
             << ", radius: " << SpawnTemplateRadiusPresetToLabel(radiusPreset)
             << ", mode: " << SpawnTemplateSquadModeToLabel(squadMode);
@@ -836,10 +887,29 @@ void RefreshSpawnButtonState()
     int quantity = 0;
     const SpawnTemplateAllegiance allegiance = GetSelectedSpawnTemplateAllegiance();
     const SpawnTemplateSquadMode squadMode = GetSelectedSpawnTemplateSquadMode();
+    SpawnTemplateFactionSelection factionSelection;
+    std::string factionMessage;
     const bool hasSelectedTemplate = TryResolveSelectedSpawnTemplate(&templateData, 0, 0) && templateData != 0;
     const bool hasValidQuantity = TryGetSpawnTemplateQuantity(&quantity);
     const bool hasSupportedMode = IsSpawnTemplateModeAllowed(squadMode, allegiance);
-    g_spawnCharactersButton->setEnabled(hasTarget && hasSelectedTemplate && hasValidQuantity && hasSupportedMode);
+    const bool hasValidFactionSelection =
+        TryResolveSelectedSpawnTemplateFactionSelection(&factionSelection, &factionMessage);
+    const bool hasCompatibleFaction =
+        hasTarget
+        && hasValidFactionSelection
+        && TryGetSpawnTemplateFactionRestrictionMessage(
+            g_lastTargetSnapshot.target,
+            squadMode,
+            allegiance,
+            factionSelection,
+            &factionMessage);
+    g_spawnCharactersButton->setEnabled(
+        hasTarget
+        && hasSelectedTemplate
+        && hasValidQuantity
+        && hasSupportedMode
+        && hasValidFactionSelection
+        && hasCompatibleFaction);
 }
 
 void OnSpawnSearchTextChanged(MyGUI::EditBox*)
@@ -960,6 +1030,27 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
     const SpawnTemplateAllegiance allegiance = GetSelectedSpawnTemplateAllegiance();
     const SpawnTemplateRadiusPreset radiusPreset = GetSelectedSpawnTemplateRadiusPreset();
     const SpawnTemplateSquadMode squadMode = GetSelectedSpawnTemplateSquadMode();
+    SpawnTemplateFactionSelection factionSelection;
+    std::string factionMessage;
+    if (!TryResolveAndValidateSpawnTemplateFactionSelection(
+            requestedTarget,
+            squadMode,
+            allegiance,
+            &factionSelection,
+            &factionMessage))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"spawn_templates\" success=false reason=\"invalid_faction_selection\""
+               << " template_name=\"" << SanitizeLogValue(displayName) << "\""
+               << " quantity=" << quantity
+               << " faction_mode=\"" << SanitizeLogValue(SpawnTemplateFactionModeToLabel(GetSelectedSpawnTemplateFactionMode())) << "\""
+               << " faction_query=\"" << SanitizeLogValue(g_spawnCustomFactionSearchEdit ? TrimAscii(g_spawnCustomFactionSearchEdit->getOnlyText().asUTF8()) : "") << "\""
+               << " target_name=\"" << SanitizeLogValue(requestedTargetName) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Spawn failed - " + factionMessage);
+        return;
+    }
+
     const bool isCreatureTemplate = IsCreatureSpawnTemplateData(templateData);
     const SpawnCreatureAgePreset creatureAgePreset = GetSelectedSpawnCreatureAgePreset();
     SpawnTemplateApplyResult applyResult;
@@ -970,6 +1061,7 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
             radiusPreset,
             squadMode,
             allegiance,
+            factionSelection,
             creatureAgePreset,
             quantity,
             &applyResult))
@@ -978,6 +1070,8 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
         result << "event=testkit_action_result action=\"spawn_templates\" success=false reason=\"apply_failed\""
                << " template_name=\"" << SanitizeLogValue(displayName) << "\""
                << " quantity=" << quantity
+               << " faction_mode=\"" << SanitizeLogValue(SpawnTemplateFactionModeToLabel(factionSelection.mode)) << "\""
+               << " faction=\"" << SanitizeLogValue(DescribeSpawnTemplateFactionSelection(factionSelection)) << "\""
                << " allegiance=\"" << SanitizeLogValue(SpawnTemplateAllegianceToLabel(allegiance)) << "\""
                << " radius=\"" << SanitizeLogValue(SpawnTemplateRadiusPresetToLabel(radiusPreset)) << "\""
                << " mode=\"" << SanitizeLogValue(SpawnTemplateSquadModeToLabel(squadMode)) << "\""
@@ -994,6 +1088,8 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
            << (applyResult.success ? "true" : "false")
            << " template_name=\"" << SanitizeLogValue(displayName) << "\""
            << " quantity=" << quantity
+           << " faction_mode=\"" << SanitizeLogValue(SpawnTemplateFactionModeToLabel(factionSelection.mode)) << "\""
+           << " faction=\"" << SanitizeLogValue(DescribeSpawnTemplateFactionSelection(factionSelection)) << "\""
            << " allegiance=\"" << SanitizeLogValue(SpawnTemplateAllegianceToLabel(allegiance)) << "\""
            << " radius=\"" << SanitizeLogValue(SpawnTemplateRadiusPresetToLabel(radiusPreset)) << "\""
            << " mode=\"" << SanitizeLogValue(SpawnTemplateSquadModeToLabel(squadMode)) << "\""
@@ -1057,7 +1153,8 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
         }
         status
                << " near " << requestedTargetName
-               << " (" << SpawnTemplateAllegianceToLabel(allegiance)
+               << " (" << DescribeSpawnTemplateFactionSelection(factionSelection)
+               << ", " << SpawnTemplateAllegianceToLabel(allegiance)
                << ", " << SpawnTemplateRadiusPresetToLabel(radiusPreset)
                << ", " << SpawnTemplateSquadModeToLabel(squadMode) << ")"
                << " - " << applyResult.message;
@@ -1075,7 +1172,8 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
         }
         status
                << " near " << requestedTargetName
-               << " (" << SpawnTemplateAllegianceToLabel(allegiance)
+               << " (" << DescribeSpawnTemplateFactionSelection(factionSelection)
+               << ", " << SpawnTemplateAllegianceToLabel(allegiance)
                << ", " << SpawnTemplateRadiusPresetToLabel(radiusPreset)
                << ", " << SpawnTemplateSquadModeToLabel(squadMode) << ")";
     }
@@ -1088,7 +1186,8 @@ void OnSpawnCharactersButtonClicked(MyGUI::Widget*)
         }
         status
                << " near " << requestedTargetName
-               << " (" << SpawnTemplateAllegianceToLabel(allegiance)
+               << " (" << DescribeSpawnTemplateFactionSelection(factionSelection)
+               << ", " << SpawnTemplateAllegianceToLabel(allegiance)
                << ", " << SpawnTemplateRadiusPresetToLabel(radiusPreset)
                << ", " << SpawnTemplateSquadModeToLabel(squadMode) << ")";
     }
