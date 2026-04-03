@@ -24,6 +24,40 @@ const float kSpawnTemplateMaxResolvedDrift = 500.0f;
 const float kSpawnTemplateCloseRadiusMultiplier = 0.55f;
 const float kSpawnTemplateWideRadiusMultiplier = 1.8f;
 const float kPi = 3.14159265358979323846f;
+const float kSpawnTemplateRepeatActionAngleStep = kPi / 18.0f;
+const unsigned int kSpawnTemplateRepeatActionAngleVariants = 6u;
+
+struct SpawnPlacementDebugInfo
+{
+    SpawnPlacementDebugInfo()
+        : ring(0)
+        , slot(0)
+        , slotsInRing(0)
+        , actionOrdinal(0u)
+        , actionAngleOffsetRadians(0.0f)
+        , baseRadius(0.0f)
+        , radiusMultiplier(1.0f)
+        , finalRadius(0.0f)
+        , finalAngleRadians(0.0f)
+        , requestedDistance(0.0f)
+        , resolvedDistance(0.0f)
+    {
+    }
+
+    int ring;
+    int slot;
+    int slotsInRing;
+    unsigned int actionOrdinal;
+    float actionAngleOffsetRadians;
+    float baseRadius;
+    float radiusMultiplier;
+    float finalRadius;
+    float finalAngleRadians;
+    float requestedDistance;
+    float resolvedDistance;
+};
+
+unsigned int g_spawnPlacementActionOrdinal = 0u;
 
 const char* SpawnTemplateRadiusPresetToLabel(SpawnTemplateRadiusPreset radiusPreset)
 {
@@ -140,7 +174,9 @@ float ResolveSpawnTemplateRadiusMultiplier(SpawnTemplateRadiusPreset radiusPrese
 bool TryBuildSpawnPlacementOffset(
     int placementIndex,
     SpawnTemplateRadiusPreset radiusPreset,
-    Ogre::Vector3* outOffset)
+    unsigned int actionOrdinal,
+    Ogre::Vector3* outOffset,
+    SpawnPlacementDebugInfo* outDebugInfo)
 {
     if (!outOffset || placementIndex < 0)
     {
@@ -158,10 +194,25 @@ bool TryBuildSpawnPlacementOffset(
     }
 
     const float radiusMultiplier = ResolveSpawnTemplateRadiusMultiplier(radiusPreset);
-    const float radius =
-        (kSpawnTemplateBaseRadius + (static_cast<float>(ring) * kSpawnTemplateRingSpacing)) * radiusMultiplier;
-    const float angle = ((2.0f * kPi) * static_cast<float>(slot)) / static_cast<float>(slotsInRing);
+    const float baseRadius = kSpawnTemplateBaseRadius + (static_cast<float>(ring) * kSpawnTemplateRingSpacing);
+    const float radius = baseRadius * radiusMultiplier;
+    const float baseAngle = ((2.0f * kPi) * static_cast<float>(slot)) / static_cast<float>(slotsInRing);
+    const float actionAngleOffset =
+        static_cast<float>(actionOrdinal % kSpawnTemplateRepeatActionAngleVariants) * kSpawnTemplateRepeatActionAngleStep;
+    const float angle = baseAngle + actionAngleOffset;
     *outOffset = Ogre::Vector3(std::cos(angle) * radius, 0.0f, std::sin(angle) * radius);
+    if (outDebugInfo)
+    {
+        outDebugInfo->ring = ring;
+        outDebugInfo->slot = slot;
+        outDebugInfo->slotsInRing = slotsInRing;
+        outDebugInfo->actionOrdinal = actionOrdinal;
+        outDebugInfo->actionAngleOffsetRadians = actionAngleOffset;
+        outDebugInfo->baseRadius = baseRadius;
+        outDebugInfo->radiusMultiplier = radiusMultiplier;
+        outDebugInfo->finalRadius = radius;
+        outDebugInfo->finalAngleRadians = angle;
+    }
     return true;
 }
 
@@ -169,8 +220,10 @@ bool TryResolveSpawnPlacementPosition(
     Character* target,
     int placementIndex,
     SpawnTemplateRadiusPreset radiusPreset,
+    unsigned int actionOrdinal,
     Ogre::Vector3* requestedPositionOut,
-    Ogre::Vector3* resolvedPositionOut)
+    Ogre::Vector3* resolvedPositionOut,
+    SpawnPlacementDebugInfo* outDebugInfo)
 {
     if (requestedPositionOut)
     {
@@ -189,7 +242,7 @@ bool TryResolveSpawnPlacementPosition(
     Ogre::Vector3 anchorPosition(0.0f, 0.0f, 0.0f);
     Ogre::Vector3 placementOffset(0.0f, 0.0f, 0.0f);
     if (!TryGetSpawnAnchorPosition(target, &anchorPosition)
-        || !TryBuildSpawnPlacementOffset(placementIndex, radiusPreset, &placementOffset))
+        || !TryBuildSpawnPlacementOffset(placementIndex, radiusPreset, actionOrdinal, &placementOffset, outDebugInfo))
     {
         return false;
     }
@@ -208,6 +261,12 @@ bool TryResolveSpawnPlacementPosition(
         resolvedPosition = validatedPosition;
     }
 
+    if (outDebugInfo)
+    {
+        outDebugInfo->requestedDistance = ComputeHorizontalDistance(anchorPosition, requestedPosition);
+        outDebugInfo->resolvedDistance = ComputeHorizontalDistance(anchorPosition, resolvedPosition);
+    }
+
     *requestedPositionOut = requestedPosition;
     *resolvedPositionOut = resolvedPosition;
     return true;
@@ -216,6 +275,13 @@ bool TryResolveSpawnPlacementPosition(
 bool TryResolveTargetSpawnFaction(Character* target, Faction** outFaction)
 {
     return TryResolveCharacterFaction(target, outFaction);
+}
+
+unsigned int ConsumeSpawnPlacementActionOrdinal()
+{
+    const unsigned int actionOrdinal = g_spawnPlacementActionOrdinal;
+    ++g_spawnPlacementActionOrdinal;
+    return actionOrdinal;
 }
 
 bool TryResolvePlayerSpawnFaction(Faction** outFaction)
@@ -1683,6 +1749,7 @@ bool TrySpawnTemplateNearTarget(
         targetPlatoon);
 
     ActivePlatoon* spawnGroupContainer = addToTargetSquad ? targetPlatoon : 0;
+    const unsigned int placementActionOrdinal = ConsumeSpawnPlacementActionOrdinal();
 
     for (int spawnIndex = 0; spawnIndex < quantity; ++spawnIndex)
     {
@@ -1690,14 +1757,17 @@ bool TrySpawnTemplateNearTarget(
         int placementAttemptsUsed = 0;
         Ogre::Vector3 requestedPosition(0.0f, 0.0f, 0.0f);
         Ogre::Vector3 resolvedPosition(0.0f, 0.0f, 0.0f);
+        SpawnPlacementDebugInfo placementDebugInfo;
         for (int attempt = 0; attempt < kSpawnTemplateMaxPlacementAttemptsPerUnit; ++attempt)
         {
             if (TryResolveSpawnPlacementPosition(
                     target,
                     spawnIndex + attempt,
                     radiusPreset,
+                    placementActionOrdinal,
                     &requestedPosition,
-                    &resolvedPosition))
+                    &resolvedPosition,
+                    &placementDebugInfo))
             {
                 placementFound = true;
                 placementAttemptsUsed = attempt + 1;
@@ -1719,7 +1789,16 @@ bool TrySpawnTemplateNearTarget(
                      << " creature_age_preset=\"" << SanitizeLogValue(SpawnCreatureAgePresetToLabel(creatureAgePreset)) << "\""
                      << " requested_age_0to1=" << requestedAge0To1
                      << " spawn_index=" << spawnIndex
-                     << " attempts=" << kSpawnTemplateMaxPlacementAttemptsPerUnit;
+                     << " attempts=" << kSpawnTemplateMaxPlacementAttemptsPerUnit
+                     << " placement_action_ordinal=" << placementActionOrdinal
+                     << " placement_ring=" << placementDebugInfo.ring
+                     << " placement_slot=" << placementDebugInfo.slot
+                     << " placement_slots_in_ring=" << placementDebugInfo.slotsInRing
+                     << " placement_action_angle_offset_degrees="
+                     << (placementDebugInfo.actionAngleOffsetRadians * 180.0f / kPi)
+                     << " placement_base_radius=" << placementDebugInfo.baseRadius
+                     << " placement_radius_multiplier=" << placementDebugInfo.radiusMultiplier
+                     << " placement_final_radius=" << placementDebugInfo.finalRadius;
                 AppendCharacterProbeLogFields(line, "target", target);
                 AppendFactionLogFields(line, "desired_faction", desiredFaction);
                 AppendFactionLogFields(line, "create_faction", createFaction);
@@ -1761,6 +1840,18 @@ bool TrySpawnTemplateNearTarget(
                      << " resolved_x=" << resolvedPosition.x
                      << " resolved_y=" << resolvedPosition.y
                      << " resolved_z=" << resolvedPosition.z
+                     << " placement_action_ordinal=" << placementActionOrdinal
+                     << " placement_ring=" << placementDebugInfo.ring
+                     << " placement_slot=" << placementDebugInfo.slot
+                     << " placement_slots_in_ring=" << placementDebugInfo.slotsInRing
+                     << " placement_action_angle_offset_degrees="
+                     << (placementDebugInfo.actionAngleOffsetRadians * 180.0f / kPi)
+                     << " placement_angle_degrees=" << (placementDebugInfo.finalAngleRadians * 180.0f / kPi)
+                     << " placement_base_radius=" << placementDebugInfo.baseRadius
+                     << " placement_radius_multiplier=" << placementDebugInfo.radiusMultiplier
+                     << " placement_final_radius=" << placementDebugInfo.finalRadius
+                     << " requested_distance=" << placementDebugInfo.requestedDistance
+                     << " resolved_distance=" << placementDebugInfo.resolvedDistance
                      << " create_owner_container_ptr=" << FormatPointerValue(createOwnerContainer);
                 AppendCharacterProbeLogFields(line, "target", target);
                 AppendFactionLogFields(line, "desired_faction", desiredFaction);
@@ -1840,6 +1931,18 @@ bool TrySpawnTemplateNearTarget(
                  << " resolved_x=" << resolvedPosition.x
                  << " resolved_y=" << resolvedPosition.y
                  << " resolved_z=" << resolvedPosition.z
+                 << " placement_action_ordinal=" << placementActionOrdinal
+                 << " placement_ring=" << placementDebugInfo.ring
+                 << " placement_slot=" << placementDebugInfo.slot
+                 << " placement_slots_in_ring=" << placementDebugInfo.slotsInRing
+                 << " placement_action_angle_offset_degrees="
+                 << (placementDebugInfo.actionAngleOffsetRadians * 180.0f / kPi)
+                 << " placement_angle_degrees=" << (placementDebugInfo.finalAngleRadians * 180.0f / kPi)
+                 << " placement_base_radius=" << placementDebugInfo.baseRadius
+                 << " placement_radius_multiplier=" << placementDebugInfo.radiusMultiplier
+                 << " placement_final_radius=" << placementDebugInfo.finalRadius
+                 << " requested_distance=" << placementDebugInfo.requestedDistance
+                 << " resolved_distance=" << placementDebugInfo.resolvedDistance
                  << " used_target_platoon_fallback=" << (usedTargetPlatoonFallback ? "true" : "false")
                  << " target_platoon_ptr=" << FormatPointerValue(targetPlatoon)
                  << " create_owner_container_ptr=" << FormatPointerValue(createOwnerContainer)
