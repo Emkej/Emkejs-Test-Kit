@@ -1123,35 +1123,6 @@ int CountInventoryItemsByGameData(Inventory* inventory, GameData* itemData)
     return count;
 }
 
-bool IsExactItemInInventory(Inventory* inventory, Item* item)
-{
-    if (!inventory || !item)
-    {
-        return false;
-    }
-
-    lektor<InventorySection*>& allSections = inventory->getAllSections();
-    for (uint32_t sectionIndex = 0; sectionIndex < allSections.size(); ++sectionIndex)
-    {
-        InventorySection* section = allSections[sectionIndex];
-        if (!section)
-        {
-            continue;
-        }
-
-        const Ogre::vector<InventorySection::SectionItem>::type& sectionItems = section->getItems();
-        for (size_t itemIndex = 0; itemIndex < sectionItems.size(); ++itemIndex)
-        {
-            if (sectionItems[itemIndex].item == item)
-            {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
 bool TryAddCreatedItemToSection(InventorySection* section, Item* item)
 {
     if (!section || !item || !section->getEnabled())
@@ -1661,8 +1632,6 @@ bool TrySpawnItemInTargetInventoryImpl(
     }
 
     const bool weaponPath = IsInventorySpawnWeaponDataType(itemData);
-    const bool armourPath = IsInventorySpawnArmourDataType(itemData);
-    const bool genericRollbackPath = !weaponPath && !armourPath;
     const int beforeCount = CountInventoryItemsByGameData(inventory, itemData);
     *investigateStageOut = 2;
     bool addAccepted = false;
@@ -1763,118 +1732,6 @@ bool TrySpawnItemInTargetInventoryImpl(
             }
 
             ++deliveredCount;
-        }
-    }
-    else if (armourPath)
-    {
-        for (int itemIndex = 0; itemIndex < quantity; ++itemIndex)
-        {
-            *investigateIterationOut = itemIndex;
-            *investigateStageOut = 6;
-
-            const bool targetHasRoomForNextItem = target->hasRoomForItem(itemData);
-            const bool inventoryHasRoomForNextItem = inventory->hasRoomForItem(itemData);
-            if (!targetHasRoomForNextItem && !inventoryHasRoomForNextItem)
-            {
-                std::stringstream line;
-                line << "general_delivery_stop"
-                     << " iteration=" << itemIndex
-                     << " requested_quantity=" << quantity
-                     << " delivered_count=" << deliveredCount
-                     << " target_has_room=" << (targetHasRoomForNextItem ? "true" : "false")
-                     << " inventory_has_room=" << (inventoryHasRoomForNextItem ? "true" : "false");
-                LogInvestigateInventorySpawnLine(line.str());
-                break;
-            }
-
-            Item* item = ou->theFactory->createItem(itemData, ownerHandle, 0, 0, 0, 0);
-            if (!item)
-            {
-                std::stringstream line;
-                line << "general_create_item"
-                     << " iteration=" << itemIndex
-                     << " created=false";
-                LogInvestigateInventorySpawnLine(line.str());
-                return false;
-            }
-
-            {
-                std::stringstream line;
-                line << "general_create_item"
-                     << " iteration=" << itemIndex
-                     << " created=true"
-                     << " item_ptr=" << item
-                     << " quantity_field=" << item->quantity
-                     << " width=" << item->itemWidth
-                     << " height=" << item->itemHeight
-                     << " section=\"" << SanitizeLogValue(item->inventorySection) << "\"";
-                LogInvestigateInventorySpawnLine(line.str());
-            }
-
-            *investigateStageOut = 7;
-            const bool giveAcceptedRaw = target->giveItem(item, false, true);
-            const bool giveAccepted =
-                giveAcceptedRaw
-                && item->isInInventory
-                && !item->inventorySection.empty();
-            {
-                std::stringstream line;
-                line << "general_give_item"
-                     << " iteration=" << itemIndex
-                     << " give_accepted_raw=" << (giveAcceptedRaw ? "true" : "false")
-                     << " give_accepted=" << (giveAccepted ? "true" : "false")
-                     << " delivered_count_so_far=" << deliveredCount
-                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
-                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
-                LogInvestigateInventorySpawnLine(line.str());
-            }
-
-            const bool fallbackAccepted =
-                giveAccepted ? false : TryAddCreatedItemToInventorySections(inventory, item);
-            const bool exactItemFound = IsExactItemInInventory(inventory, item);
-            if (!giveAccepted)
-            {
-                std::stringstream line;
-                line << "general_section_fallback"
-                     << " iteration=" << itemIndex
-                     << " fallback_accepted=" << (fallbackAccepted ? "true" : "false")
-                     << " exact_item_found=" << (exactItemFound ? "true" : "false")
-                     << " delivered_count_so_far=" << deliveredCount
-                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
-                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
-                LogInvestigateInventorySpawnLine(line.str());
-            }
-
-            if (!exactItemFound)
-            {
-                std::stringstream line;
-                line << "general_delivery_stop"
-                     << " iteration=" << itemIndex
-                     << " requested_quantity=" << quantity
-                     << " delivered_count=" << deliveredCount
-                     << " give_accepted_raw=" << (giveAcceptedRaw ? "true" : "false")
-                     << " give_accepted=" << (giveAccepted ? "true" : "false")
-                     << " fallback_accepted=" << (fallbackAccepted ? "true" : "false")
-                     << " exact_item_found=false";
-                LogInvestigateInventorySpawnLine(line.str());
-                break;
-            }
-
-            addAccepted = true;
-            ++deliveredCount;
-            {
-                std::stringstream line;
-                line << "general_delivery_result"
-                     << " iteration=" << itemIndex
-                     << " give_accepted_raw=" << (giveAcceptedRaw ? "true" : "false")
-                     << " give_accepted=" << (giveAccepted ? "true" : "false")
-                     << " fallback_accepted=" << (fallbackAccepted ? "true" : "false")
-                     << " exact_item_found=true"
-                     << " delivered_count_so_far=" << deliveredCount
-                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
-                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
-                LogInvestigateInventorySpawnLine(line.str());
-            }
         }
     }
     else
@@ -1978,7 +1835,7 @@ bool TrySpawnItemInTargetInventoryImpl(
     }
     if (deliveredCountOut)
     {
-        if (genericRollbackPath)
+        if (!weaponPath)
         {
             int observedDeliveredCount = afterCount - beforeCount;
             if (observedDeliveredCount < 0)
