@@ -1123,6 +1123,35 @@ int CountInventoryItemsByGameData(Inventory* inventory, GameData* itemData)
     return count;
 }
 
+bool IsExactItemInInventory(Inventory* inventory, Item* item)
+{
+    if (!inventory || !item)
+    {
+        return false;
+    }
+
+    lektor<InventorySection*>& allSections = inventory->getAllSections();
+    for (uint32_t sectionIndex = 0; sectionIndex < allSections.size(); ++sectionIndex)
+    {
+        InventorySection* section = allSections[sectionIndex];
+        if (!section)
+        {
+            continue;
+        }
+
+        const Ogre::vector<InventorySection::SectionItem>::type& sectionItems = section->getItems();
+        for (size_t itemIndex = 0; itemIndex < sectionItems.size(); ++itemIndex)
+        {
+            if (sectionItems[itemIndex].item == item)
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 bool TryAddCreatedItemToSection(InventorySection* section, Item* item)
 {
     if (!section || !item || !section->getEnabled())
@@ -1598,7 +1627,8 @@ bool TrySpawnItemInTargetInventoryImpl(
     volatile int* investigateIterationOut,
     int* beforeCountOut,
     int* afterCountOut,
-    bool* addAcceptedOut)
+    bool* addAcceptedOut,
+    int* deliveredCountOut)
 {
     if (beforeCountOut)
     {
@@ -1611,6 +1641,10 @@ bool TrySpawnItemInTargetInventoryImpl(
     if (addAcceptedOut)
     {
         *addAcceptedOut = false;
+    }
+    if (deliveredCountOut)
+    {
+        *deliveredCountOut = 0;
     }
 
     if (!target || !itemData || quantity <= 0 || !ou || !ou->theFactory)
@@ -1627,9 +1661,12 @@ bool TrySpawnItemInTargetInventoryImpl(
     }
 
     const bool weaponPath = IsInventorySpawnWeaponDataType(itemData);
+    const bool armourPath = IsInventorySpawnArmourDataType(itemData);
+    const bool genericRollbackPath = !weaponPath && !armourPath;
     const int beforeCount = CountInventoryItemsByGameData(inventory, itemData);
     *investigateStageOut = 2;
     bool addAccepted = false;
+    int deliveredCount = 0;
     const hand& ownerHandle = target->getHandle();
     GameData* weaponManufacturerData = weaponPath ? GetInventorySpawnWeaponManufacturerData(itemData) : 0;
     GameData* weaponModelData = weaponPath ? GetInventorySpawnWeaponModelData(itemData, weaponManufacturerData) : 0;
@@ -1724,20 +1761,195 @@ bool TrySpawnItemInTargetInventoryImpl(
                 addAccepted = false;
                 break;
             }
+
+            ++deliveredCount;
+        }
+    }
+    else if (armourPath)
+    {
+        for (int itemIndex = 0; itemIndex < quantity; ++itemIndex)
+        {
+            *investigateIterationOut = itemIndex;
+            *investigateStageOut = 6;
+
+            const bool targetHasRoomForNextItem = target->hasRoomForItem(itemData);
+            const bool inventoryHasRoomForNextItem = inventory->hasRoomForItem(itemData);
+            if (!targetHasRoomForNextItem && !inventoryHasRoomForNextItem)
+            {
+                std::stringstream line;
+                line << "general_delivery_stop"
+                     << " iteration=" << itemIndex
+                     << " requested_quantity=" << quantity
+                     << " delivered_count=" << deliveredCount
+                     << " target_has_room=" << (targetHasRoomForNextItem ? "true" : "false")
+                     << " inventory_has_room=" << (inventoryHasRoomForNextItem ? "true" : "false");
+                LogInvestigateInventorySpawnLine(line.str());
+                break;
+            }
+
+            Item* item = ou->theFactory->createItem(itemData, ownerHandle, 0, 0, 0, 0);
+            if (!item)
+            {
+                std::stringstream line;
+                line << "general_create_item"
+                     << " iteration=" << itemIndex
+                     << " created=false";
+                LogInvestigateInventorySpawnLine(line.str());
+                return false;
+            }
+
+            {
+                std::stringstream line;
+                line << "general_create_item"
+                     << " iteration=" << itemIndex
+                     << " created=true"
+                     << " item_ptr=" << item
+                     << " quantity_field=" << item->quantity
+                     << " width=" << item->itemWidth
+                     << " height=" << item->itemHeight
+                     << " section=\"" << SanitizeLogValue(item->inventorySection) << "\"";
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            *investigateStageOut = 7;
+            const bool giveAcceptedRaw = target->giveItem(item, false, true);
+            const bool giveAccepted =
+                giveAcceptedRaw
+                && item->isInInventory
+                && !item->inventorySection.empty();
+            {
+                std::stringstream line;
+                line << "general_give_item"
+                     << " iteration=" << itemIndex
+                     << " give_accepted_raw=" << (giveAcceptedRaw ? "true" : "false")
+                     << " give_accepted=" << (giveAccepted ? "true" : "false")
+                     << " delivered_count_so_far=" << deliveredCount
+                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
+                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            const bool fallbackAccepted =
+                giveAccepted ? false : TryAddCreatedItemToInventorySections(inventory, item);
+            const bool exactItemFound = IsExactItemInInventory(inventory, item);
+            if (!giveAccepted)
+            {
+                std::stringstream line;
+                line << "general_section_fallback"
+                     << " iteration=" << itemIndex
+                     << " fallback_accepted=" << (fallbackAccepted ? "true" : "false")
+                     << " exact_item_found=" << (exactItemFound ? "true" : "false")
+                     << " delivered_count_so_far=" << deliveredCount
+                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
+                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            if (!exactItemFound)
+            {
+                std::stringstream line;
+                line << "general_delivery_stop"
+                     << " iteration=" << itemIndex
+                     << " requested_quantity=" << quantity
+                     << " delivered_count=" << deliveredCount
+                     << " give_accepted_raw=" << (giveAcceptedRaw ? "true" : "false")
+                     << " give_accepted=" << (giveAccepted ? "true" : "false")
+                     << " fallback_accepted=" << (fallbackAccepted ? "true" : "false")
+                     << " exact_item_found=false";
+                LogInvestigateInventorySpawnLine(line.str());
+                break;
+            }
+
+            addAccepted = true;
+            ++deliveredCount;
+            {
+                std::stringstream line;
+                line << "general_delivery_result"
+                     << " iteration=" << itemIndex
+                     << " give_accepted_raw=" << (giveAcceptedRaw ? "true" : "false")
+                     << " give_accepted=" << (giveAccepted ? "true" : "false")
+                     << " fallback_accepted=" << (fallbackAccepted ? "true" : "false")
+                     << " exact_item_found=true"
+                     << " delivered_count_so_far=" << deliveredCount
+                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
+                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
+                LogInvestigateInventorySpawnLine(line.str());
+            }
         }
     }
     else
     {
+        *investigateIterationOut = 0;
         *investigateStageOut = 6;
-        Item* item = ou->theFactory->createItem(itemData, ownerHandle, 0, 0, 0, 0);
-        if (!item)
-        {
-            LogInvestigateInventorySpawnLine("general_create_item_null");
-            return false;
-        }
 
-        *investigateStageOut = 7;
-        addAccepted = inventory->addItem(item, quantity, false, true);
+        const bool targetHasRoomForNextItem = target->hasRoomForItem(itemData);
+        const bool inventoryHasRoomForNextItem = inventory->hasRoomForItem(itemData);
+        if (!targetHasRoomForNextItem && !inventoryHasRoomForNextItem)
+        {
+            std::stringstream line;
+            line << "general_delivery_stop"
+                 << " iteration=0"
+                 << " requested_quantity=" << quantity
+                 << " delivered_count=0"
+                 << " target_has_room=" << (targetHasRoomForNextItem ? "true" : "false")
+                 << " inventory_has_room=" << (inventoryHasRoomForNextItem ? "true" : "false");
+            LogInvestigateInventorySpawnLine(line.str());
+        }
+        else
+        {
+            Item* item = ou->theFactory->createItem(itemData, hand(), 0, 0, 0, 0);
+            if (!item)
+            {
+                std::stringstream line;
+                line << "general_create_item"
+                     << " iteration=0"
+                     << " created=false"
+                     << " owner_handle_mode=\"null_hand\"";
+                LogInvestigateInventorySpawnLine(line.str());
+                return false;
+            }
+
+            {
+                std::stringstream line;
+                line << "general_create_item"
+                     << " iteration=0"
+                     << " created=true"
+                     << " owner_handle_mode=\"null_hand\""
+                     << " item_ptr=" << item
+                     << " quantity_field=" << item->quantity
+                     << " width=" << item->itemWidth
+                     << " height=" << item->itemHeight
+                     << " section=\"" << SanitizeLogValue(item->inventorySection) << "\"";
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            *investigateStageOut = 7;
+            const bool bulkAddAccepted = inventory->addItem(item, quantity, false, true);
+            {
+                std::stringstream line;
+                line << "general_add_item"
+                     << " iteration=0"
+                     << " owner_handle_mode=\"null_hand\""
+                     << " accepted=" << (bulkAddAccepted ? "true" : "false")
+                     << " requested_quantity=" << quantity
+                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
+                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            if (!bulkAddAccepted)
+            {
+                std::stringstream line;
+                line << "general_delivery_stop"
+                     << " iteration=0"
+                     << " requested_quantity=" << quantity
+                     << " delivered_count=0"
+                     << " accepted=false";
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            addAccepted = bulkAddAccepted;
+        }
     }
 
     *investigateStageOut = 8;
@@ -1764,6 +1976,23 @@ bool TrySpawnItemInTargetInventoryImpl(
     {
         *addAcceptedOut = addAccepted;
     }
+    if (deliveredCountOut)
+    {
+        if (genericRollbackPath)
+        {
+            int observedDeliveredCount = afterCount - beforeCount;
+            if (observedDeliveredCount < 0)
+            {
+                observedDeliveredCount = 0;
+            }
+            if (observedDeliveredCount > quantity)
+            {
+                observedDeliveredCount = quantity;
+            }
+            deliveredCount = observedDeliveredCount;
+        }
+        *deliveredCountOut = deliveredCount;
+    }
 
     return true;
 }
@@ -1774,7 +2003,8 @@ bool TrySpawnItemInTargetInventory(
     int quantity,
     int* beforeCountOut,
     int* afterCountOut,
-    bool* addAcceptedOut)
+    bool* addAcceptedOut,
+    int* deliveredCountOut)
 {
     volatile int investigateStage = 0;
     volatile int investigateIteration = -1;
@@ -1789,7 +2019,8 @@ bool TrySpawnItemInTargetInventory(
             &investigateIteration,
             beforeCountOut,
             afterCountOut,
-            addAcceptedOut);
+            addAcceptedOut,
+            deliveredCountOut);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -2241,13 +2472,15 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
     bool addAccepted = false;
     int beforeCount = 0;
     int afterCount = 0;
+    int deliveredCount = 0;
     if (!TrySpawnItemInTargetInventory(
             g_lastTargetSnapshot.target,
             itemData,
             quantity,
             &beforeCount,
             &afterCount,
-            &addAccepted))
+            &addAccepted,
+            &deliveredCount))
     {
         std::stringstream result;
         result << "event=testkit_action_result action=\"spawn_inventory_item\" success=false reason=\"apply_failed\""
@@ -2260,7 +2493,9 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
     }
 
     const int observedDelta = afterCount - beforeCount;
-    const bool success = addAccepted && observedDelta == quantity;
+    const bool success = deliveredCount == quantity;
+    const bool partialFill = deliveredCount > 0 && deliveredCount < quantity;
+    const bool rejected = deliveredCount == 0;
 
     std::stringstream result;
     result << "event=testkit_action_result action=\"spawn_inventory_item\" success="
@@ -2268,11 +2503,16 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
            << " target_name=\"" << SanitizeLogValue(targetName) << "\""
            << " item_name=\"" << SanitizeLogValue(itemLabel) << "\""
            << " quantity=" << quantity
+           << " delivered_count=" << deliveredCount
            << " add_accepted=" << (addAccepted ? "true" : "false")
            << " before_count=" << beforeCount
            << " after_count=" << afterCount
            << " observed_delta=" << observedDelta;
-    if (!addAccepted)
+    if (partialFill)
+    {
+        result << " reason=\"inventory_full_partial_fill\"";
+    }
+    else if (rejected)
     {
         result << " reason=\"inventory_rejected_add\"";
     }
@@ -2290,13 +2530,22 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
         return;
     }
 
-    if (!addAccepted)
+    if (partialFill)
+    {
+        std::stringstream status;
+        status << "Spawned " << deliveredCount << " of " << quantity << " " << itemLabel
+               << " for " << targetName << " - inventory full";
+        SetStatusMessage(status.str());
+        return;
+    }
+
+    if (rejected)
     {
         SetStatusMessage("Spawn Item failed - inventory rejected the item");
         return;
     }
 
-    SetStatusMessage("Spawn Item requested for " + targetName + " - no full inventory readback yet");
+    SetStatusMessage("Spawn Item failed - inventory rejected the item");
 }
 
 void OnSpawnItemButtonPressed(MyGUI::Widget*, int, int, MyGUI::MouseButton id)
