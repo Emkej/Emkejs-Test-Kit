@@ -16,6 +16,7 @@ build/
 .packaging/
 dist/
 .boost-link-override/
+.boost-vc100/  # Boost library build artifacts
 
 # Files
 *.obj
