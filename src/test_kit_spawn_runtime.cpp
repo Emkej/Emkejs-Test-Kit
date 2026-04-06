@@ -1422,6 +1422,11 @@ const char* GetSpawnTemplateFactionRestrictionMessage(
     Faction* targetFaction,
     Faction* playerFaction)
 {
+    // `selectedFaction == 0` means the user did not choose a custom faction.
+    // In that case faction is inherited later from target/player context instead of
+    // being treated as an explicit faction choice that can mismatch validation.
+    const bool inheritsFactionFromContext = (selectedFaction == 0);
+
     if (squadMode == SpawnTemplateSquadMode_SeparateSquad
         && DoesSpawnTemplateFactionMatchRequirement(selectedFaction, targetFaction))
     {
@@ -1429,6 +1434,7 @@ const char* GetSpawnTemplateFactionRestrictionMessage(
     }
 
     if (squadMode == SpawnTemplateSquadMode_AddToTargetSquad
+        && !inheritsFactionFromContext
         && !DoesSpawnTemplateFactionMatchRequirement(selectedFaction, targetFaction))
     {
         return "Add to target squad requires the target faction";
@@ -1437,13 +1443,15 @@ const char* GetSpawnTemplateFactionRestrictionMessage(
     switch (allegiance)
     {
     case SpawnTemplateAllegiance_SameAsTarget:
-        if (!DoesSpawnTemplateFactionMatchRequirement(selectedFaction, targetFaction))
+        if (!inheritsFactionFromContext
+            && !DoesSpawnTemplateFactionMatchRequirement(selectedFaction, targetFaction))
         {
             return "Same as target requires the target faction";
         }
         break;
     case SpawnTemplateAllegiance_FriendlyPlayer:
-        if (!DoesSpawnTemplateFactionMatchRequirement(selectedFaction, playerFaction))
+        if (!inheritsFactionFromContext
+            && !DoesSpawnTemplateFactionMatchRequirement(selectedFaction, playerFaction))
         {
             return "Friendly (player) requires the player faction";
         }
@@ -1778,29 +1786,39 @@ bool TrySpawnTemplateNearTarget(
 
     if (factionSelection.mode == SpawnTemplateFactionMode_None)
     {
-        if (!TryResolveEmptySpawnFaction(&emptyFaction) || !emptyFaction)
+        if (addToTargetSquad)
         {
-            outResult->message = "spawn faction unavailable";
-            LogSpawnInvestigationReject(
-                "spawn_faction_unavailable",
-                templateName,
-                target,
-                radiusPreset,
-                squadMode,
-                allegiance,
-                isCreatureTemplate,
-                creatureAgePreset,
-                requestedAge0To1,
-                quantity,
-                targetFaction,
-                desiredFaction,
-                emptyFaction,
-                createFaction,
-                targetPlatoon);
-            return false;
+            // No custom faction selected means "inherit from the target squad context".
+            // Keep runtime aligned with validation so Add to target squad + None still
+            // applies the target faction instead of silently using the empty faction.
+            desiredFaction = targetFaction;
         }
+        else
+        {
+            if (!TryResolveEmptySpawnFaction(&emptyFaction) || !emptyFaction)
+            {
+                outResult->message = "spawn faction unavailable";
+                LogSpawnInvestigationReject(
+                    "spawn_faction_unavailable",
+                    templateName,
+                    target,
+                    radiusPreset,
+                    squadMode,
+                    allegiance,
+                    isCreatureTemplate,
+                    creatureAgePreset,
+                    requestedAge0To1,
+                    quantity,
+                    targetFaction,
+                    desiredFaction,
+                    emptyFaction,
+                    createFaction,
+                    targetPlatoon);
+                return false;
+            }
 
-        desiredFaction = emptyFaction;
+            desiredFaction = emptyFaction;
+        }
     }
     else
     {
