@@ -315,6 +315,8 @@ extern MyGUI::ComboBox* g_itemCategoryDropdown;
 extern MyGUI::TextBox* g_itemSearchLabelText;
 extern MyGUI::EditBox* g_itemSearchEdit;
 extern MyGUI::ListBox* g_itemSearchResultsList;
+extern MyGUI::TextBox* g_itemQualityLabelText;
+extern MyGUI::ComboBox* g_itemQualityDropdown;
 extern MyGUI::TextBox* g_itemQuantityLabelText;
 extern MyGUI::EditBox* g_itemQuantityEdit;
 extern MyGUI::Button* g_spawnItemButton;

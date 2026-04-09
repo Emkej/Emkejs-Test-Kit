@@ -3,6 +3,7 @@
 #include "test_kit_config.h"
 #include "test_kit_health.h"
 #include "test_kit_inventory.h"
+#include "test_kit_inventory_quality.h"
 #include "test_kit_spawn.h"
 #include "test_kit_stats.h"
 #include "test_kit_teleport.h"
@@ -153,6 +154,8 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_itemSearchLabelText, inventoryVisible);
     SetWidgetVisible(g_itemSearchEdit, inventoryVisible);
     SetWidgetVisible(g_itemSearchResultsList, inventoryVisible);
+    SetWidgetVisible(g_itemQualityLabelText, inventoryVisible);
+    SetWidgetVisible(g_itemQualityDropdown, inventoryVisible);
     SetWidgetVisible(g_itemQuantityLabelText, inventoryVisible);
     SetWidgetVisible(g_itemQuantityEdit, inventoryVisible);
     SetWidgetVisible(g_spawnItemButton, inventoryVisible);
@@ -765,6 +768,8 @@ void ResetPanelWidgetPointers()
     g_itemSearchLabelText = 0;
     g_itemSearchEdit = 0;
     g_itemSearchResultsList = 0;
+    g_itemQualityLabelText = 0;
+    g_itemQualityDropdown = 0;
     g_itemQuantityLabelText = 0;
     g_itemQuantityEdit = 0;
     g_spawnItemButton = 0;
@@ -1054,6 +1059,8 @@ bool HasAllPanelWidgets()
         && g_itemSearchLabelText
         && g_itemSearchEdit
         && g_itemSearchResultsList
+        && g_itemQualityLabelText
+        && g_itemQualityDropdown
         && g_itemQuantityLabelText
         && g_itemQuantityEdit
         && g_spawnItemButton
@@ -1222,6 +1229,7 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_spawnFoodSectionText);
     ConfigureTextWidget(g_itemCategoryLabelText);
     ConfigureTextWidget(g_itemSearchLabelText);
+    ConfigureTextWidget(g_itemQualityLabelText);
     ConfigureTextWidget(g_itemQuantityLabelText);
     ConfigureTextWidget(g_spawnSectionText);
     ConfigureTextWidget(g_spawnCategoryLabelText);
@@ -1250,6 +1258,7 @@ void InitializePanelWidgets()
     ConfigureEditBoxWidget(g_spawnQuantityEdit);
     ConfigureEditBoxWidget(g_spawnCustomFactionSearchEdit);
     ConfigureComboBoxWidget(g_itemCategoryDropdown);
+    ConfigureComboBoxWidget(g_itemQualityDropdown);
     ConfigureComboBoxWidget(g_spawnCategoryDropdown);
     ConfigureComboBoxWidget(g_spawnFactionDropdown);
     ConfigureComboBoxWidget(g_spawnAllegianceDropdown);
@@ -1295,6 +1304,7 @@ void InitializePanelWidgets()
     g_spawnFoodSectionText->setCaption("Spawn Items");
     g_itemCategoryLabelText->setCaption("Category");
     g_itemSearchLabelText->setCaption("Search");
+    g_itemQualityLabelText->setCaption("Quality");
     g_itemQuantityLabelText->setCaption("Quantity");
     g_spawnSectionText->setCaption("Spawn");
     g_spawnCategoryLabelText->setCaption("Category");
@@ -1368,6 +1378,7 @@ void InitializePanelWidgets()
     g_itemSearchEdit->setOnlyText("");
     g_itemSearchResultsList->removeAllItems();
     g_itemSearchResultsList->clearIndexSelected();
+    ResetInventoryQualityWidgetState();
     g_itemQuantityEdit->setEditStatic(false);
     g_itemQuantityEdit->setMaxTextLength(10);
     g_itemQuantityEdit->setOnlyText("1");
@@ -1475,6 +1486,7 @@ void InitializePanelWidgets()
     g_itemSearchEdit->eventKeyButtonPressed += MyGUI::newDelegate(&OnInventoryItemSearchKeyPressed);
     g_itemSearchEdit->eventKeyButtonReleased += MyGUI::newDelegate(&OnInventoryItemSearchKeyReleased);
     g_itemSearchResultsList->eventListChangePosition += MyGUI::newDelegate(&OnInventorySearchResultsSelectionChanged);
+    g_itemQualityDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnInventoryQualityChanged);
     g_spawnItemButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnItemButtonPressed);
     g_spawnCategoryDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnSpawnCategoryChanged);
     g_spawnSearchEdit->eventEditTextChange += MyGUI::newDelegate(&OnSpawnSearchTextChanged);
@@ -2011,7 +2023,15 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_itemSearchResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        BuildBodyCoord(20, 410, kPanelWidth - 40, 142),
+        BuildBodyCoord(20, 410, kPanelWidth - 40, 86),
+        MyGUI::Align::Default);
+    g_itemQualityLabelText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 502, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_itemQualityDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
+        "Kenshi_ComboBox",
+        BuildBodyCoord(20, 524, kPanelWidth - 40, 30),
         MyGUI::Align::Default);
     g_itemQuantityLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",

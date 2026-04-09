@@ -1,4 +1,5 @@
 #include "test_kit_inventory.h"
+#include "test_kit_inventory_quality.h"
 
 #include <core/Functions.h>
 #include <kenshi/GameWorld.h>
@@ -1594,6 +1595,7 @@ bool TrySpawnItemInTargetInventoryImpl(
     Character* target,
     GameData* itemData,
     int quantity,
+    const InventorySpawnWeaponQualitySelection* weaponQualitySelection,
     volatile int* investigateStageOut,
     volatile int* investigateIterationOut,
     int* beforeCountOut,
@@ -1637,9 +1639,25 @@ bool TrySpawnItemInTargetInventoryImpl(
     bool addAccepted = false;
     int deliveredCount = 0;
     const hand& ownerHandle = target->getHandle();
-    GameData* weaponManufacturerData = weaponPath ? GetInventorySpawnWeaponManufacturerData(itemData) : 0;
-    GameData* weaponModelData = weaponPath ? GetInventorySpawnWeaponModelData(itemData, weaponManufacturerData) : 0;
-    const int weaponLevel = weaponPath ? GetInventorySpawnWeaponLevel(weaponManufacturerData, weaponModelData) : 0;
+    GameData* weaponManufacturerData = 0;
+    GameData* weaponModelData = 0;
+    int weaponLevel = 0;
+    if (weaponPath)
+    {
+        if (weaponQualitySelection)
+        {
+            weaponManufacturerData = weaponQualitySelection->manufacturerData;
+            weaponModelData = weaponQualitySelection->modelData;
+            weaponLevel = weaponQualitySelection->weaponLevel;
+        }
+
+        if (!weaponManufacturerData && !weaponModelData && weaponLevel <= 0)
+        {
+            weaponManufacturerData = GetInventorySpawnWeaponManufacturerData(itemData);
+            weaponModelData = GetInventorySpawnWeaponModelData(itemData, weaponManufacturerData);
+            weaponLevel = GetInventorySpawnWeaponLevel(weaponManufacturerData, weaponModelData);
+        }
+    }
     const bool targetHasRoom = target->hasRoomForItem(itemData);
     const bool inventoryHasRoom = inventory->hasRoomForItem(itemData);
 
@@ -1858,6 +1876,7 @@ bool TrySpawnItemInTargetInventory(
     Character* target,
     GameData* itemData,
     int quantity,
+    const InventorySpawnWeaponQualitySelection* weaponQualitySelection,
     int* beforeCountOut,
     int* afterCountOut,
     bool* addAcceptedOut,
@@ -1872,6 +1891,7 @@ bool TrySpawnItemInTargetInventory(
             target,
             itemData,
             quantity,
+            weaponQualitySelection,
             &investigateStage,
             &investigateIteration,
             beforeCountOut,
@@ -1887,9 +1907,15 @@ bool TrySpawnItemInTargetInventory(
 }
 }
 
+bool TryResolveSelectedInventoryItem(GameData** itemDataOut, std::string* itemLabelOut)
+{
+    return TryResolveSelectedInventoryFoodItem(itemDataOut, itemLabelOut);
+}
+
 void ResetInventoryRuntimeState()
 {
     g_inventorySearchCtrlFPrevDown = false;
+    ResetInventoryQualityRuntimeState();
     ResetInventoryWidgetInteractionState();
     ResetInventoryFoodItemOptions();
 }
@@ -1898,6 +1924,7 @@ void ResetInventoryWidgetInteractionState()
 {
     ResetPendingInventorySearchShortcut();
     ResetInventorySearchEditSnapshot();
+    ResetInventoryQualityWidgetState();
 }
 
 void RefreshInventoryFoodItemDropdown()
@@ -1958,6 +1985,7 @@ void RefreshInventoryFoodItemDropdown()
 
         g_itemSearchResultsList->clearIndexSelected();
         g_itemSearchResultsList->beginToItemFirst();
+        RefreshInventoryQualityOptions();
         RefreshInventorySpawnButtonState();
         return;
     }
@@ -1991,6 +2019,7 @@ void RefreshInventoryFoodItemDropdown()
         g_itemSearchResultsList->beginToItemFirst();
     }
 
+    RefreshInventoryQualityOptions();
     RefreshInventorySpawnButtonState();
 }
 
@@ -2270,6 +2299,7 @@ void OnInventoryCategoryChanged(MyGUI::ComboBox*, size_t)
 
 void OnInventorySearchResultsSelectionChanged(MyGUI::ListBox*, size_t)
 {
+    RefreshInventoryQualityOptions();
     RefreshInventorySpawnButtonState();
 }
 
@@ -2309,6 +2339,19 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
         return;
     }
 
+    const bool weaponPath = IsInventorySpawnWeaponDataType(itemData);
+    InventorySpawnWeaponQualitySelection weaponQualitySelection;
+    if (!TryResolveSelectedInventoryWeaponQuality(itemData, &weaponQualitySelection))
+    {
+        std::stringstream result;
+        result << "event=testkit_action_result action=\"spawn_inventory_item\" success=false reason=\"invalid_quality_selection\""
+               << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\""
+               << " item_name=\"" << SanitizeLogValue(itemLabel) << "\"";
+        LogInfoLine(result.str());
+        SetStatusMessage("Spawn Item failed - quality selection unavailable");
+        return;
+    }
+
     const std::string quantityText = TrimAscii(g_itemQuantityEdit->getOnlyText().asUTF8());
     int quantity = 0;
     if (!TryParsePositiveInt(quantityText, &quantity))
@@ -2318,6 +2361,12 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
                << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\""
                << " quantity_text=\"" << SanitizeLogValue(quantityText) << "\""
                << " item_name=\"" << SanitizeLogValue(itemLabel) << "\"";
+        if (weaponPath)
+        {
+            result << " quality=\"" << SanitizeLogValue(weaponQualitySelection.label) << "\""
+                   << " quality_mode=\"" << (weaponQualitySelection.usesDefaultBehavior ? "default" : "explicit")
+                   << "\"";
+        }
         LogInfoLine(result.str());
         SetStatusMessage("Spawn Item failed - enter a positive quantity");
         return;
@@ -2334,6 +2383,7 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
             g_lastTargetSnapshot.target,
             itemData,
             quantity,
+            &weaponQualitySelection,
             &beforeCount,
             &afterCount,
             &addAccepted,
@@ -2344,6 +2394,12 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
                << " target_name=\"" << SanitizeLogValue(targetName) << "\""
                << " item_name=\"" << SanitizeLogValue(itemLabel) << "\""
                << " quantity=" << quantity;
+        if (weaponPath)
+        {
+            result << " quality=\"" << SanitizeLogValue(weaponQualitySelection.label) << "\""
+                   << " quality_mode=\"" << (weaponQualitySelection.usesDefaultBehavior ? "default" : "explicit")
+                   << "\"";
+        }
         LogInfoLine(result.str());
         SetStatusMessage("Spawn Item failed - target inventory unavailable");
         return;
@@ -2365,6 +2421,12 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
            << " before_count=" << beforeCount
            << " after_count=" << afterCount
            << " observed_delta=" << observedDelta;
+    if (weaponPath)
+    {
+        result << " quality=\"" << SanitizeLogValue(weaponQualitySelection.label) << "\""
+               << " quality_mode=\"" << (weaponQualitySelection.usesDefaultBehavior ? "default" : "explicit")
+               << "\"";
+    }
     if (partialFill)
     {
         result << " reason=\"inventory_full_partial_fill\"";
@@ -2383,6 +2445,10 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
     {
         std::stringstream status;
         status << "Spawned " << quantity << " " << itemLabel << " for " << targetName;
+        if (weaponPath)
+        {
+            status << " (quality: " << weaponQualitySelection.label << ")";
+        }
         SetStatusMessage(status.str());
         return;
     }
@@ -2392,6 +2458,10 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
         std::stringstream status;
         status << "Spawned " << deliveredCount << " of " << quantity << " " << itemLabel
                << " for " << targetName << " - inventory full";
+        if (weaponPath)
+        {
+            status << " (quality: " << weaponQualitySelection.label << ")";
+        }
         SetStatusMessage(status.str());
         return;
     }

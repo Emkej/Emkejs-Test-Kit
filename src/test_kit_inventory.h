@@ -4,6 +4,7 @@
 
 namespace test_kit
 {
+bool TryResolveSelectedInventoryItem(GameData** itemDataOut, std::string* itemLabelOut);
 void ResetInventoryRuntimeState();
 void ResetInventoryWidgetInteractionState();
 void EnsureInventoryFoodItemOptionsLoaded();
