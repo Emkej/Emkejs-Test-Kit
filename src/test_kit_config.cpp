@@ -36,6 +36,12 @@ int g_panelHeaderTitleFontHeight = kPanelHeaderTitleFontHeightDefault;
 int g_panelCollapseButtonSize = kPanelCollapseButtonSizeDefault;
 int g_panelCloseButtonSize = kPanelCloseButtonSizeDefault;
 int g_panelBodyOverlap = kPanelBodyOverlapDefault;
+int g_healthTabButtonWidth = 60;
+int g_statsTabButtonWidth = 60;
+int g_teleportTabButtonWidth = 80;
+int g_inventoryTabButtonWidth = 88;
+int g_spawnTabButtonWidth = 60;
+int g_constructionTabButtonWidth = 128;
 std::vector<SavedLocation> g_savedLocations;
 
 namespace
@@ -62,6 +68,18 @@ const char* kModHubPanelMinHeightDescription =
 const char* kModHubPanelWidthLabel = "Panel Width";
 const char* kModHubPanelWidthDescription =
     "Overall width of the debug panel. Wider values give long labels, lists, and previews more room.";
+const char* kModHubHealthTabWidthLabel = "Health Tab Width";
+const char* kModHubHealthTabWidthDescription = "Width in pixels for the Health tab button.";
+const char* kModHubStatsTabWidthLabel = "Stats Tab Width";
+const char* kModHubStatsTabWidthDescription = "Width in pixels for the Stats tab button.";
+const char* kModHubTeleportTabWidthLabel = "Teleport Tab Width";
+const char* kModHubTeleportTabWidthDescription = "Width in pixels for the Teleport tab button.";
+const char* kModHubInventoryTabWidthLabel = "Inventory Tab Width";
+const char* kModHubInventoryTabWidthDescription = "Width in pixels for the Inventory tab button.";
+const char* kModHubSpawnTabWidthLabel = "Spawn Tab Width";
+const char* kModHubSpawnTabWidthDescription = "Width in pixels for the Spawn tab button.";
+const char* kModHubConstructionTabWidthLabel = "Construction Tab Width";
+const char* kModHubConstructionTabWidthDescription = "Width in pixels for the Construction tab button.";
 const char* kModHubPanelMaxHeightLabel = "Max Panel Height";
 const char* kModHubPanelMaxHeightDescription =
     "Maximum expanded height for the debug panel. Taller tab content scrolls inside the panel.";
@@ -77,6 +95,14 @@ const char* kModHubPanelCloseButtonSizeDescription =
 const char* kModHubPanelBodyOverlapLabel = "Header Body Overlap";
 const char* kModHubPanelBodyOverlapDescription =
     "How many pixels the panel body tucks under the header to hide the seam.";
+const int kPanelTabButtonWidthLowerBound = 48;
+const int kPanelTabButtonWidthUpperBound = 180;
+const int kPanelHealthTabButtonWidthDefault = 60;
+const int kPanelStatsTabButtonWidthDefault = 60;
+const int kPanelTeleportTabButtonWidthDefault = 80;
+const int kPanelInventoryTabButtonWidthDefault = 88;
+const int kPanelSpawnTabButtonWidthDefault = 60;
+const int kPanelConstructionTabButtonWidthDefault = 128;
 
 emc::ModHubClient g_modHubClient;
 bool g_modHubClientConfigured = false;
@@ -1543,6 +1569,12 @@ bool TrySaveTogglePanelHotkeyConfig(const char** outError)
         || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_shift", g_togglePanelRequireShift)
         || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_alt", g_togglePanelRequireAlt)
         || !TryUpsertJsonIntByKey(&configText, "panel_width", kPanelWidth)
+        || !TryUpsertJsonIntByKey(&configText, "health_tab_button_width", g_healthTabButtonWidth)
+        || !TryUpsertJsonIntByKey(&configText, "stats_tab_button_width", g_statsTabButtonWidth)
+        || !TryUpsertJsonIntByKey(&configText, "teleport_tab_button_width", g_teleportTabButtonWidth)
+        || !TryUpsertJsonIntByKey(&configText, "inventory_tab_button_width", g_inventoryTabButtonWidth)
+        || !TryUpsertJsonIntByKey(&configText, "spawn_tab_button_width", g_spawnTabButtonWidth)
+        || !TryUpsertJsonIntByKey(&configText, "construction_tab_button_width", g_constructionTabButtonWidth)
         || !TryUpsertJsonIntByKey(&configText, "panel_min_expanded_height", g_panelMinExpandedHeight)
         || !TryUpsertJsonIntByKey(&configText, "panel_max_expanded_height", g_panelMaxExpandedHeight))
     {
@@ -1871,6 +1903,125 @@ EMC_Result __cdecl SetPanelWidth(void*, int32_t value, char* errBuf, uint32_t er
     return EMC_OK;
 }
 
+EMC_Result UpdateTabButtonWidthSetting(int* targetValue, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    if (!targetValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    const int previousValue = *targetValue;
+    *targetValue = ClampIntValue(value, kPanelTabButtonWidthLowerBound, kPanelTabButtonWidthUpperBound);
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        *targetValue = previousValue;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    RebuildPanelForWidthChange();
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetHealthTabButtonWidth(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_healthTabButtonWidth;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetHealthTabButtonWidth(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    return UpdateTabButtonWidthSetting(&g_healthTabButtonWidth, value, errBuf, errBufSize);
+}
+
+EMC_Result __cdecl GetStatsTabButtonWidth(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_statsTabButtonWidth;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetStatsTabButtonWidth(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    return UpdateTabButtonWidthSetting(&g_statsTabButtonWidth, value, errBuf, errBufSize);
+}
+
+EMC_Result __cdecl GetTeleportTabButtonWidth(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_teleportTabButtonWidth;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetTeleportTabButtonWidth(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    return UpdateTabButtonWidthSetting(&g_teleportTabButtonWidth, value, errBuf, errBufSize);
+}
+
+EMC_Result __cdecl GetInventoryTabButtonWidth(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_inventoryTabButtonWidth;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetInventoryTabButtonWidth(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    return UpdateTabButtonWidthSetting(&g_inventoryTabButtonWidth, value, errBuf, errBufSize);
+}
+
+EMC_Result __cdecl GetSpawnTabButtonWidth(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_spawnTabButtonWidth;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetSpawnTabButtonWidth(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    return UpdateTabButtonWidthSetting(&g_spawnTabButtonWidth, value, errBuf, errBufSize);
+}
+
+EMC_Result __cdecl GetConstructionTabButtonWidth(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_constructionTabButtonWidth;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetConstructionTabButtonWidth(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    return UpdateTabButtonWidthSetting(&g_constructionTabButtonWidth, value, errBuf, errBufSize);
+}
+
 EMC_Result __cdecl GetPanelMinExpandedHeight(void*, int32_t* outValue)
 {
     if (!outValue)
@@ -2126,6 +2277,90 @@ const EMC_IntSettingDefV2 kModHubPanelWidthSetting = {
     &SetPanelWidth
 };
 
+const EMC_IntSettingDefV2 kModHubHealthTabWidthSetting = {
+    "health_tab_button_width",
+    kModHubHealthTabWidthLabel,
+    kModHubHealthTabWidthDescription,
+    0,
+    kPanelTabButtonWidthLowerBound,
+    kPanelTabButtonWidthUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetHealthTabButtonWidth,
+    &SetHealthTabButtonWidth
+};
+
+const EMC_IntSettingDefV2 kModHubStatsTabWidthSetting = {
+    "stats_tab_button_width",
+    kModHubStatsTabWidthLabel,
+    kModHubStatsTabWidthDescription,
+    0,
+    kPanelTabButtonWidthLowerBound,
+    kPanelTabButtonWidthUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetStatsTabButtonWidth,
+    &SetStatsTabButtonWidth
+};
+
+const EMC_IntSettingDefV2 kModHubTeleportTabWidthSetting = {
+    "teleport_tab_button_width",
+    kModHubTeleportTabWidthLabel,
+    kModHubTeleportTabWidthDescription,
+    0,
+    kPanelTabButtonWidthLowerBound,
+    kPanelTabButtonWidthUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetTeleportTabButtonWidth,
+    &SetTeleportTabButtonWidth
+};
+
+const EMC_IntSettingDefV2 kModHubInventoryTabWidthSetting = {
+    "inventory_tab_button_width",
+    kModHubInventoryTabWidthLabel,
+    kModHubInventoryTabWidthDescription,
+    0,
+    kPanelTabButtonWidthLowerBound,
+    kPanelTabButtonWidthUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetInventoryTabButtonWidth,
+    &SetInventoryTabButtonWidth
+};
+
+const EMC_IntSettingDefV2 kModHubSpawnTabWidthSetting = {
+    "spawn_tab_button_width",
+    kModHubSpawnTabWidthLabel,
+    kModHubSpawnTabWidthDescription,
+    0,
+    kPanelTabButtonWidthLowerBound,
+    kPanelTabButtonWidthUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetSpawnTabButtonWidth,
+    &SetSpawnTabButtonWidth
+};
+
+const EMC_IntSettingDefV2 kModHubConstructionTabWidthSetting = {
+    "construction_tab_button_width",
+    kModHubConstructionTabWidthLabel,
+    kModHubConstructionTabWidthDescription,
+    0,
+    kPanelTabButtonWidthLowerBound,
+    kPanelTabButtonWidthUpperBound,
+    1,
+    { 4, 2, 1 },
+    { 1, 2, 4 },
+    &GetConstructionTabButtonWidth,
+    &SetConstructionTabButtonWidth
+};
+
 const EMC_IntSettingDefV2 kModHubPanelMinHeightSetting = {
     "panel_min_expanded_height",
     kModHubPanelMinHeightLabel,
@@ -2217,6 +2452,12 @@ const emc::ModHubClientSettingRowV1 kModHubBaseRows[] = {
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelShiftSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubHealthTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubStatsTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubTeleportTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubInventoryTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubSpawnTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubConstructionTabWidthSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMinHeightSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMaxHeightSetting }
 };
@@ -2228,6 +2469,12 @@ const emc::ModHubClientSettingRowV1 kModHubDeveloperRows[] = {
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelShiftSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubHealthTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubStatsTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubTeleportTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubInventoryTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubSpawnTabWidthSetting },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubConstructionTabWidthSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMinHeightSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMaxHeightSetting },
     { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelHeaderTitleFontHeightSetting },
@@ -2350,6 +2597,16 @@ void NormalizePanelVisualSettings()
     g_panelBodyOverlap = ClampIntValue(g_panelBodyOverlap, kPanelBodyOverlapLowerBound, kPanelBodyOverlapUpperBound);
 }
 
+void NormalizePanelTabButtonSettings()
+{
+    g_healthTabButtonWidth = ClampIntValue(g_healthTabButtonWidth, kPanelTabButtonWidthLowerBound, kPanelTabButtonWidthUpperBound);
+    g_statsTabButtonWidth = ClampIntValue(g_statsTabButtonWidth, kPanelTabButtonWidthLowerBound, kPanelTabButtonWidthUpperBound);
+    g_teleportTabButtonWidth = ClampIntValue(g_teleportTabButtonWidth, kPanelTabButtonWidthLowerBound, kPanelTabButtonWidthUpperBound);
+    g_inventoryTabButtonWidth = ClampIntValue(g_inventoryTabButtonWidth, kPanelTabButtonWidthLowerBound, kPanelTabButtonWidthUpperBound);
+    g_spawnTabButtonWidth = ClampIntValue(g_spawnTabButtonWidth, kPanelTabButtonWidthLowerBound, kPanelTabButtonWidthUpperBound);
+    g_constructionTabButtonWidth = ClampIntValue(g_constructionTabButtonWidth, kPanelTabButtonWidthLowerBound, kPanelTabButtonWidthUpperBound);
+}
+
 bool TryPersistSavedLocationsConfig(const std::vector<SavedLocation>& locations, std::string* outError)
 {
     std::string configPath;
@@ -2412,6 +2669,12 @@ void LoadConfig()
     g_panelCollapseButtonSize = kPanelCollapseButtonSizeDefault;
     g_panelCloseButtonSize = kPanelCloseButtonSizeDefault;
     g_panelBodyOverlap = kPanelBodyOverlapDefault;
+    g_healthTabButtonWidth = kPanelHealthTabButtonWidthDefault;
+    g_statsTabButtonWidth = kPanelStatsTabButtonWidthDefault;
+    g_teleportTabButtonWidth = kPanelTeleportTabButtonWidthDefault;
+    g_inventoryTabButtonWidth = kPanelInventoryTabButtonWidthDefault;
+    g_spawnTabButtonWidth = kPanelSpawnTabButtonWidthDefault;
+    g_constructionTabButtonWidth = kPanelConstructionTabButtonWidthDefault;
     g_savedLocations.clear();
 
     std::string configPath;
@@ -2471,6 +2734,30 @@ void LoadConfig()
     if (TryParseJsonIntByKey(configText, "panel_width", &parsedInt))
     {
         kPanelWidth = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "health_tab_button_width", &parsedInt))
+    {
+        g_healthTabButtonWidth = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "stats_tab_button_width", &parsedInt))
+    {
+        g_statsTabButtonWidth = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "teleport_tab_button_width", &parsedInt))
+    {
+        g_teleportTabButtonWidth = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "inventory_tab_button_width", &parsedInt))
+    {
+        g_inventoryTabButtonWidth = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "spawn_tab_button_width", &parsedInt))
+    {
+        g_spawnTabButtonWidth = parsedInt;
+    }
+    if (TryParseJsonIntByKey(configText, "construction_tab_button_width", &parsedInt))
+    {
+        g_constructionTabButtonWidth = parsedInt;
     }
     if (TryParseJsonIntByKey(configText, "panel_min_expanded_height", &parsedInt))
     {
@@ -2547,6 +2834,7 @@ void LoadConfig()
     kPanelWidth = ClampPanelWidthValue(kPanelWidth);
     NormalizePanelHeightSettings();
     NormalizePanelVisualSettings();
+    NormalizePanelTabButtonSettings();
     RefreshHotkeyBinding();
     RefreshSavedLocationsListWidget();
 
@@ -2558,6 +2846,12 @@ void LoadConfig()
          << " start_collapsed=" << (g_panelCollapsed ? "true" : "false")
          << " confirm_dangerous_actions=" << (g_confirmDangerousActions ? "true" : "false")
          << " panel_width=" << kPanelWidth
+         << " health_tab_width=" << g_healthTabButtonWidth
+         << " stats_tab_width=" << g_statsTabButtonWidth
+         << " teleport_tab_width=" << g_teleportTabButtonWidth
+         << " inventory_tab_width=" << g_inventoryTabButtonWidth
+         << " spawn_tab_width=" << g_spawnTabButtonWidth
+         << " construction_tab_width=" << g_constructionTabButtonWidth
          << " min_height=" << g_panelMinExpandedHeight
          << " max_height=" << g_panelMaxExpandedHeight
          << " title_font_height=" << g_panelHeaderTitleFontHeight

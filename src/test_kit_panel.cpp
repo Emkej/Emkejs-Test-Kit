@@ -1807,29 +1807,40 @@ void CreatePanelWidgets()
         "Kenshi_TextboxStandardText",
         BuildBodyCoord(184, 118, 156, 18),
         MyGUI::Align::Default);
+    const int topTabRowWidth = g_healthTabButtonWidth + g_statsTabButtonWidth + g_teleportTabButtonWidth
+        + g_inventoryTabButtonWidth + g_spawnTabButtonWidth;
+    const int topTabRowLeft = std::max(0, (kPanelWidth - topTabRowWidth) / 2);
+    const int constructionTabLeft = std::max(0, (kPanelWidth - g_constructionTabButtonWidth) / 2);
     g_healthTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(0, 170, 60, 28),
+        BuildBodyCoord(topTabRowLeft + 0, 170, g_healthTabButtonWidth, 28),
         MyGUI::Align::Default);
     g_statsTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(60, 170, 60, 28),
+        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth, 170, g_statsTabButtonWidth, 28),
         MyGUI::Align::Default);
     g_teleportTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(120, 170, 60, 28),
+        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth + g_statsTabButtonWidth, 170, g_teleportTabButtonWidth, 28),
         MyGUI::Align::Default);
     g_inventoryTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(180, 170, 60, 28),
+        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth + g_statsTabButtonWidth + g_teleportTabButtonWidth,
+            170,
+            g_inventoryTabButtonWidth,
+            28),
         MyGUI::Align::Default);
     g_spawnTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(240, 170, 60, 28),
+        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth + g_statsTabButtonWidth + g_teleportTabButtonWidth
+                + g_inventoryTabButtonWidth,
+            170,
+            g_spawnTabButtonWidth,
+            28),
         MyGUI::Align::Default);
     g_constructionTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(0, 198, 120, 28),
+        BuildBodyCoord(constructionTabLeft, 198, g_constructionTabButtonWidth, 28),
         MyGUI::Align::Default);
     g_statesSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",

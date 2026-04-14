@@ -198,6 +198,12 @@ extern const char* kSavedLocationsConfigKey;
 extern const char* kDefaultTogglePanelKey;
 
 extern int kPanelWidth;
+extern int g_healthTabButtonWidth;
+extern int g_statsTabButtonWidth;
+extern int g_teleportTabButtonWidth;
+extern int g_inventoryTabButtonWidth;
+extern int g_spawnTabButtonWidth;
+extern int g_constructionTabButtonWidth;
 
 extern std::string g_configPath;
 extern bool g_pluginEnabled;
