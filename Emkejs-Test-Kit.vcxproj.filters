@@ -21,6 +21,9 @@
     <ClCompile Include="src\test_kit_config.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\test_kit_construction.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\test_kit_health.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -57,6 +60,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\test_kit_config.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\test_kit_construction.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\test_kit_health.h">

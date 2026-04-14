@@ -5,6 +5,7 @@
 #include "test_kit_inventory.h"
 #include "test_kit_inventory_quality.h"
 #include "test_kit_spawn.h"
+#include "test_kit_construction.h"
 #include "test_kit_stats.h"
 #include "test_kit_teleport.h"
 
@@ -71,6 +72,12 @@ void UpdatePanelTabButtonCaptions()
     {
         g_spawnTabButton->setCaption(g_activePanelTab == PanelTab_Spawn ? "[Spawn]" : "Spawn");
     }
+
+    if (g_constructionTabButton)
+    {
+        g_constructionTabButton->setCaption(
+            g_activePanelTab == PanelTab_Construction ? "[Construction]" : "Construction");
+    }
 }
 
 void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
@@ -80,6 +87,7 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     const bool teleportVisible = bodyVisible && g_activePanelTab == PanelTab_Teleport;
     const bool inventoryVisible = bodyVisible && g_activePanelTab == PanelTab_Inventory;
     const bool spawnVisible = bodyVisible && g_activePanelTab == PanelTab_Spawn;
+    const bool constructionVisible = bodyVisible && g_activePanelTab == PanelTab_Construction;
     const bool spawnCustomFactionVisible = spawnVisible && ShouldShowSpawnCustomFactionControls();
 
     UpdatePanelTabButtonCaptions();
@@ -96,6 +104,7 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_teleportTabButton, bodyVisible);
     SetWidgetVisible(g_inventoryTabButton, bodyVisible);
     SetWidgetVisible(g_spawnTabButton, bodyVisible);
+    SetWidgetVisible(g_constructionTabButton, bodyVisible);
 
     SetWidgetVisible(g_statesSectionText, healthVisible);
     SetWidgetVisible(g_fullRestoreButton, healthVisible);
@@ -186,6 +195,11 @@ void UpdatePanelBodyWidgetVisibility(bool bodyVisible)
     SetWidgetVisible(g_spawnPreviewText, spawnVisible);
     SetWidgetVisible(g_spawnCharactersButton, spawnVisible);
 
+    SetWidgetVisible(g_constructionSectionText, constructionVisible);
+    SetWidgetVisible(g_constructionSelectedText, constructionVisible);
+    SetWidgetVisible(g_constructionStatusText, constructionVisible);
+    SetWidgetVisible(g_constructionFinishButton, constructionVisible);
+
     SetWidgetVisible(g_statusText, bodyVisible);
 }
 
@@ -259,19 +273,19 @@ int GetSavedLocationsContentBottomInBodyCoords()
     const int bodyTop = GetPanelBodyTop();
     if (g_savedLocationsCollapsed)
     {
-        const int fallbackBottom = 350 - bodyTop;
+        const int fallbackBottom = 378 - bodyTop;
         return GetWidgetBottom(
             g_savedLocationsCollapseButton,
             GetWidgetBottom(g_savedLocationsSectionText, fallbackBottom));
     }
 
-    return GetWidgetBottom(g_savedLocationsRowsRoot, 564 - bodyTop);
+    return GetWidgetBottom(g_savedLocationsRowsRoot, 592 - bodyTop);
 }
 
 int GetActivePanelContentBottomInBodyCoords()
 {
     const int bodyTop = GetPanelBodyTop();
-    int bottom = 198 - bodyTop;
+    int bottom = 226 - bodyTop;
     switch (g_activePanelTab)
     {
     case PanelTab_Stats:
@@ -281,11 +295,13 @@ int GetActivePanelContentBottomInBodyCoords()
     case PanelTab_Teleport:
         return GetSavedLocationsContentBottomInBodyCoords();
     case PanelTab_Inventory:
-        return GetWidgetBottom(g_spawnItemButton, 608 - bodyTop);
+        return GetWidgetBottom(g_spawnItemButton, 636 - bodyTop);
     case PanelTab_Spawn:
         return GetWidgetBottom(
             g_spawnPreviewText,
             GetWidgetBottom(g_spawnCharactersButton, 886 - bodyTop));
+    case PanelTab_Construction:
+        return GetWidgetBottom(g_constructionFinishButton, 342 - bodyTop);
     case PanelTab_Health:
     default:
         bottom = GetWidgetBottom(g_forceDyingButton, 512 - bodyTop);
@@ -688,6 +704,7 @@ void TickPanelDrag()
 void ResetPanelWidgetPointers()
 {
     ResetInventoryWidgetInteractionState();
+    ResetConstructionUiState();
 
     g_panel = 0;
     g_headerBackground = 0;
@@ -709,6 +726,7 @@ void ResetPanelWidgetPointers()
     g_teleportTabButton = 0;
     g_inventoryTabButton = 0;
     g_spawnTabButton = 0;
+    g_constructionTabButton = 0;
     g_statesSectionText = 0;
     g_fullRestoreButton = 0;
     g_forceUnconsciousButton = 0;
@@ -798,6 +816,10 @@ void ResetPanelWidgetPointers()
     g_spawnModeDropdown = 0;
     g_spawnPreviewText = 0;
     g_spawnCharactersButton = 0;
+    g_constructionSectionText = 0;
+    g_constructionSelectedText = 0;
+    g_constructionStatusText = 0;
+    g_constructionFinishButton = 0;
     g_dangerousSectionText = 0;
     g_forceDeadButton = 0;
     g_forceDyingButton = 0;
@@ -1000,6 +1022,7 @@ bool HasAllPanelWidgets()
         && g_teleportTabButton
         && g_inventoryTabButton
         && g_spawnTabButton
+        && g_constructionTabButton
         && g_statesSectionText
         && g_fullRestoreButton
         && g_forceUnconsciousButton
@@ -1065,6 +1088,10 @@ bool HasAllPanelWidgets()
         && g_itemQuantityEdit
         && g_spawnItemButton
         && g_spawnSectionText
+        && g_constructionSectionText
+        && g_constructionSelectedText
+        && g_constructionStatusText
+        && g_constructionFinishButton
         && g_spawnCategoryLabelText
         && g_spawnCategoryDropdown
         && g_spawnSearchLabelText
@@ -1244,6 +1271,9 @@ void InitializePanelWidgets()
     ConfigureTextWidget(g_spawnCreatureAgeLabelText);
     ConfigureTextWidget(g_spawnModeLabelText);
     ConfigureTextWidget(g_spawnPreviewText);
+    ConfigureTextWidget(g_constructionSectionText);
+    ConfigureTextWidget(g_constructionSelectedText);
+    ConfigureTextWidget(g_constructionStatusText);
     ConfigureTextWidget(g_dangerousSectionText);
     ConfigureTextWidget(g_statusText);
     ApplySectionHeaderFonts();
@@ -1308,6 +1338,9 @@ void InitializePanelWidgets()
     g_itemQuantityLabelText->setCaption("Quantity");
     g_spawnSectionText->setCaption("Spawn");
     g_spawnCategoryLabelText->setCaption("Category");
+    g_constructionSectionText->setCaption("Construction");
+    g_constructionSelectedText->setCaption("Selected: None");
+    g_constructionStatusText->setCaption("Status: No selection");
     g_spawnSearchLabelText->setCaption("Search");
     g_spawnResultCountText->setCaption("0 results");
     g_spawnSelectedSummaryText->setCaption("Selected: None");
@@ -1323,6 +1356,7 @@ void InitializePanelWidgets()
     g_spawnCreatureAgeLabelText->setCaption("Age (creatures)");
     g_spawnModeLabelText->setCaption("Mode");
     g_spawnPreviewText->setCaption("Preview: Select a spawn template");
+    g_constructionFinishButton->setCaption("Finish selected construction");
     g_dangerousSectionText->setCaption("Dangerous");
 
     g_fullRestoreButton->setCaption("Full Restore");
@@ -1500,6 +1534,8 @@ void InitializePanelWidgets()
     g_spawnCreatureAgeDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnSpawnCreatureAgeChanged);
     g_spawnModeDropdown->eventComboChangePosition += MyGUI::newDelegate(&OnSpawnModeChanged);
     g_spawnCharactersButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnSpawnCharactersButtonPressed);
+    g_constructionTabButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnConstructionTabButtonPressed);
+    g_constructionFinishButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnFinishSelectedConstructionButtonPressed);
     g_forceDyingButton->eventMouseButtonPressed += MyGUI::newDelegate(&OnForceDyingButtonPressed);
     g_headerFrame->eventMouseButtonPressed += MyGUI::newDelegate(&OnHeaderMousePressed);
     g_headerFrame->eventMouseDrag += MyGUI::newDelegate(&OnHeaderMouseDrag);
@@ -1509,6 +1545,7 @@ void InitializePanelWidgets()
     TargetSnapshot snapshot;
     ResetTargetSnapshot(&snapshot);
     ApplyTargetSnapshotToUi(snapshot);
+    RefreshConstructionUi(g_lastPlayerInterface);
 }
 
 bool IsAnyVirtualKeyDown(int primaryVk, int leftVk, int rightVk)
@@ -1648,6 +1685,7 @@ void SetActivePanelTab(PanelTab tab)
         g_bodyScrollView->setViewOffset(MyGUI::IntPoint(0, 0));
     }
     ApplyPanelLayout();
+    RefreshConstructionUi(g_lastPlayerInterface);
 }
 
 void CreatePanelWidgets()
@@ -1771,179 +1809,183 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_healthTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(10, 170, 68, 28),
+        BuildBodyCoord(0, 170, 60, 28),
         MyGUI::Align::Default);
     g_statsTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(78, 170, 68, 28),
+        BuildBodyCoord(60, 170, 60, 28),
         MyGUI::Align::Default);
     g_teleportTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(146, 170, 68, 28),
+        BuildBodyCoord(120, 170, 60, 28),
         MyGUI::Align::Default);
     g_inventoryTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(214, 170, 68, 28),
+        BuildBodyCoord(180, 170, 60, 28),
         MyGUI::Align::Default);
     g_spawnTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(282, 170, 68, 28),
+        BuildBodyCoord(240, 170, 60, 28),
+        MyGUI::Align::Default);
+    g_constructionTabButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(0, 198, 120, 28),
         MyGUI::Align::Default);
     g_statesSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 236, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
     g_fullRestoreButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 230, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 258, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_forceUnconsciousButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 264, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 292, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_limbDamageSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 298, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 326, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
     g_damageLeftArmButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 320, 156, 28),
+        BuildBodyCoord(20, 348, 156, 28),
         MyGUI::Align::Default);
     g_damageRightArmButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 320, 156, 28),
+        BuildBodyCoord(184, 348, 156, 28),
         MyGUI::Align::Default);
     g_damageLeftLegButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 354, 156, 28),
+        BuildBodyCoord(20, 382, 156, 28),
         MyGUI::Align::Default);
     g_damageRightLegButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 354, 156, 28),
+        BuildBodyCoord(184, 382, 156, 28),
         MyGUI::Align::Default);
     g_statsSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 236, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
     g_statsScopeText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 232, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 260, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsApplyToAllButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 254, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 282, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_statsClipboardText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 288, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 316, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsCopyButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 310, 156, 28),
+        BuildBodyCoord(20, 338, 156, 28),
         MyGUI::Align::Default);
     g_statsPasteButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 310, 156, 28),
+        BuildBodyCoord(184, 338, 156, 28),
         MyGUI::Align::Default);
     g_statsSectionFilterText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 344, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 372, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsAllSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 366, 70, 28),
+        BuildBodyCoord(20, 394, 70, 28),
         MyGUI::Align::Default);
     g_statsCommonSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(96, 366, 78, 28),
+        BuildBodyCoord(96, 394, 78, 28),
         MyGUI::Align::Default);
     g_statsCoreSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(180, 366, 70, 28),
+        BuildBodyCoord(180, 394, 70, 28),
         MyGUI::Align::Default);
     g_statsUtilitySectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(256, 366, 84, 28),
+        BuildBodyCoord(256, 394, 84, 28),
         MyGUI::Align::Default);
     g_statsCombatSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 400, 94, 28),
+        BuildBodyCoord(20, 428, 94, 28),
         MyGUI::Align::Default);
     g_statsWeaponsSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(120, 400, 96, 28),
+        BuildBodyCoord(120, 428, 96, 28),
         MyGUI::Align::Default);
     g_statsLaborSectionButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(222, 400, 118, 28),
+        BuildBodyCoord(222, 428, 118, 28),
         MyGUI::Align::Default);
     g_statsSearchLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 434, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 462, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 456, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 484, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_statsResultCountText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 490, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 518, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        BuildBodyCoord(20, 512, kPanelWidth - 40, 114),
+        BuildBodyCoord(20, 540, kPanelWidth - 40, 114),
         MyGUI::Align::Default);
     g_statsSelectedSummaryText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 632, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 660, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsCurrentValueText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 654, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 682, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsInputLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 676, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 704, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_statsInputEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 698, 96, 28),
+        BuildBodyCoord(20, 726, 96, 28),
         MyGUI::Align::Default);
     g_statsSetButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(124, 698, 64, 28),
+        BuildBodyCoord(124, 726, 64, 28),
         MyGUI::Align::Default);
     g_statsAddButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(196, 698, 64, 28),
+        BuildBodyCoord(196, 726, 64, 28),
         MyGUI::Align::Default);
     g_statsSubtractButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(268, 698, 72, 28),
+        BuildBodyCoord(268, 726, 72, 28),
         MyGUI::Align::Default);
     g_statsPreviewText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 732, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 760, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_teleportSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 236, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
     g_saveLocationNameLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 232, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 260, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_saveLocationNameEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 254, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 282, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_saveSelectedLocationButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 288, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 316, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_savedLocationsSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 326, kPanelWidth - 60, 20),
+        BuildBodyCoord(14, 354, kPanelWidth - 60, 20),
         MyGUI::Align::Default);
     g_savedLocationsCollapseButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
@@ -1951,7 +1993,7 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_savedLocationsRowsRoot = bodyParent->createWidget<MyGUI::Widget>(
         "PanelEmpty",
-        BuildBodyCoord(20, 354, kPanelWidth - 40, kSavedLocationsSectionContentHeight),
+        BuildBodyCoord(20, 382, kPanelWidth - 40, kSavedLocationsSectionContentHeight),
         MyGUI::Align::Default);
     g_savedLocationSearchLabelText = g_savedLocationsRowsRoot->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
@@ -1987,175 +2029,191 @@ void CreatePanelWidgets()
         MyGUI::Align::Default);
     g_inventorySectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 236, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
     g_moneyAmountLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 208, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 236, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_moneyAmountEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 230, 156, 28),
+        BuildBodyCoord(20, 258, 156, 28),
         MyGUI::Align::Default);
     g_addMoneyButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 230, 156, 28),
+        BuildBodyCoord(184, 258, 156, 28),
         MyGUI::Align::Default);
     g_spawnFoodSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 274, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 302, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
     g_itemCategoryLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 296, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 324, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_itemCategoryDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        BuildBodyCoord(20, 318, kPanelWidth - 40, 30),
+        BuildBodyCoord(20, 346, kPanelWidth - 40, 30),
         MyGUI::Align::Default);
     g_itemSearchLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 354, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 382, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_itemSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 376, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 404, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_itemSearchResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        BuildBodyCoord(20, 410, kPanelWidth - 40, 86),
+        BuildBodyCoord(20, 438, kPanelWidth - 40, 86),
         MyGUI::Align::Default);
     g_itemQualityLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 502, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 530, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_itemQualityDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        BuildBodyCoord(20, 524, kPanelWidth - 40, 30),
+        BuildBodyCoord(20, 552, kPanelWidth - 40, 30),
         MyGUI::Align::Default);
     g_itemQuantityLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 558, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 586, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_itemQuantityEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 580, 156, 28),
+        BuildBodyCoord(20, 608, 156, 28),
         MyGUI::Align::Default);
     g_spawnItemButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 580, 156, 28),
+        BuildBodyCoord(184, 608, 156, 28),
         MyGUI::Align::Default);
     g_spawnSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 208, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 236, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
     g_spawnCategoryLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 230, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 258, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_spawnCategoryDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        BuildBodyCoord(20, 252, kPanelWidth - 40, 30),
+        BuildBodyCoord(20, 280, kPanelWidth - 40, 30),
         MyGUI::Align::Default);
     g_spawnSearchLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 288, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 316, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_spawnSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 310, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 338, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_spawnResultCountText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 344, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 372, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_spawnResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        BuildBodyCoord(20, 366, kPanelWidth - 40, 108),
+        BuildBodyCoord(20, 394, kPanelWidth - 40, 108),
         MyGUI::Align::Default);
     g_spawnSelectedSummaryText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 480, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 508, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_spawnQuantityLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 504, 156, 18),
+        BuildBodyCoord(20, 532, 156, 18),
         MyGUI::Align::Default);
     g_spawnQuantityEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 526, 156, 28),
+        BuildBodyCoord(20, 554, 156, 28),
         MyGUI::Align::Default);
     g_spawnRadiusLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(184, 504, 156, 18),
+        BuildBodyCoord(184, 532, 156, 18),
         MyGUI::Align::Default);
     g_spawnRadiusDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        BuildBodyCoord(184, 526, 156, 30),
+        BuildBodyCoord(184, 554, 156, 30),
         MyGUI::Align::Default);
     g_spawnAllegianceLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 560, 156, 18),
+        BuildBodyCoord(20, 588, 156, 18),
         MyGUI::Align::Default);
     g_spawnAllegianceDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        BuildBodyCoord(20, 582, 156, 30),
+        BuildBodyCoord(20, 610, 156, 30),
         MyGUI::Align::Default);
     g_spawnFactionLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 618, 156, 18),
+        BuildBodyCoord(20, 646, 156, 18),
         MyGUI::Align::Default);
     g_spawnFactionDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        BuildBodyCoord(20, 640, 156, 30),
+        BuildBodyCoord(20, 668, 156, 30),
         MyGUI::Align::Default);
     g_spawnCreatureAgeLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(184, 618, 156, 18),
+        BuildBodyCoord(184, 646, 156, 18),
         MyGUI::Align::Default);
     g_spawnCreatureAgeDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        BuildBodyCoord(184, 640, 156, 30),
+        BuildBodyCoord(184, 668, 156, 30),
         MyGUI::Align::Default);
     g_spawnCustomFactionLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 676, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 704, kPanelWidth - 40, 18),
         MyGUI::Align::Default);
     g_spawnCustomFactionSearchEdit = bodyParent->createWidget<MyGUI::EditBox>(
         "Kenshi_EditBox",
-        BuildBodyCoord(20, 698, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 726, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_spawnCustomFactionResultsList = bodyParent->createWidget<MyGUI::ListBox>(
         "Kenshi_ListBox",
-        BuildBodyCoord(20, 730, kPanelWidth - 40, 96),
+        BuildBodyCoord(20, 758, kPanelWidth - 40, 96),
         MyGUI::Align::Default);
     g_spawnModeLabelText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(184, 560, 156, 18),
+        BuildBodyCoord(184, 588, 156, 18),
         MyGUI::Align::Default);
     g_spawnModeDropdown = bodyParent->createWidget<MyGUI::ComboBox>(
         "Kenshi_ComboBox",
-        BuildBodyCoord(184, 582, 156, 30),
+        BuildBodyCoord(184, 610, 156, 30),
         MyGUI::Align::Default);
     g_spawnCharactersButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(184, 834, 156, 28),
+        BuildBodyCoord(184, 862, 156, 28),
         MyGUI::Align::Default);
     g_spawnPreviewText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",
-        BuildBodyCoord(20, 868, kPanelWidth - 40, 18),
+        BuildBodyCoord(20, 896, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_constructionSectionText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxPaintedText",
+        BuildBodyCoord(14, 236, kPanelWidth - 28, 20),
+        MyGUI::Align::Default);
+    g_constructionSelectedText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 260, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_constructionStatusText = bodyParent->createWidget<MyGUI::TextBox>(
+        "Kenshi_TextboxStandardText",
+        BuildBodyCoord(20, 282, kPanelWidth - 40, 18),
+        MyGUI::Align::Default);
+    g_constructionFinishButton = bodyParent->createWidget<MyGUI::Button>(
+        "Kenshi_Button1",
+        BuildBodyCoord(20, 314, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_dangerousSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
-        BuildBodyCoord(14, 394, kPanelWidth - 28, 20),
+        BuildBodyCoord(14, 422, kPanelWidth - 28, 20),
         MyGUI::Align::Default);
     g_forceDeadButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 416, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 444, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_forceDyingButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(20, 450, kPanelWidth - 40, 28),
+        BuildBodyCoord(20, 478, kPanelWidth - 40, 28),
         MyGUI::Align::Default);
     g_statusText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxStandardText",

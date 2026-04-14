@@ -133,6 +133,7 @@ MyGUI::Button* g_statsTabButton = 0;
 MyGUI::Button* g_teleportTabButton = 0;
 MyGUI::Button* g_inventoryTabButton = 0;
 MyGUI::Button* g_spawnTabButton = 0;
+MyGUI::Button* g_constructionTabButton = 0;
 MyGUI::TextBox* g_statesSectionText = 0;
 MyGUI::Button* g_fullRestoreButton = 0;
 MyGUI::Button* g_forceUnconsciousButton = 0;
@@ -222,6 +223,10 @@ MyGUI::TextBox* g_spawnModeLabelText = 0;
 MyGUI::ComboBox* g_spawnModeDropdown = 0;
 MyGUI::TextBox* g_spawnPreviewText = 0;
 MyGUI::Button* g_spawnCharactersButton = 0;
+MyGUI::TextBox* g_constructionSectionText = 0;
+MyGUI::TextBox* g_constructionSelectedText = 0;
+MyGUI::TextBox* g_constructionStatusText = 0;
+MyGUI::Button* g_constructionFinishButton = 0;
 MyGUI::TextBox* g_dangerousSectionText = 0;
 MyGUI::Button* g_forceDeadButton = 0;
 MyGUI::Button* g_forceDyingButton = 0;
@@ -1262,6 +1267,7 @@ void UpdateSelectionActionButtons(PlayerInterface* player)
     RefreshInventorySpawnButtonState();
     RefreshSpawnButtonState();
     RefreshSpawnPreviewText();
+    RefreshConstructionUi(player);
 }
 
 void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot)

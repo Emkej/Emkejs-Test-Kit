@@ -89,6 +89,7 @@
   <ItemGroup>
     <ClCompile Include="Emkejs-Test-Kit.cpp" />
     <ClCompile Include="src\test_kit_config.cpp" />
+    <ClCompile Include="src\test_kit_construction.cpp" />
     <ClCompile Include="src\test_kit_health.cpp" />
     <ClCompile Include="src\test_kit_inventory.cpp" />
     <ClCompile Include="src\test_kit_inventory_quality.cpp" />
@@ -103,6 +104,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\test_kit_config.h" />
+    <ClInclude Include="src\test_kit_construction.h" />
     <ClInclude Include="src\test_kit_health.h" />
     <ClInclude Include="src\test_kit_inventory.h" />
     <ClInclude Include="src\test_kit_inventory_quality.h" />

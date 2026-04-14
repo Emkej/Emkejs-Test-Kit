@@ -45,7 +45,8 @@ enum PanelTab
     PanelTab_Stats = 1,
     PanelTab_Teleport = 2,
     PanelTab_Inventory = 3,
-    PanelTab_Spawn = 4
+    PanelTab_Spawn = 4,
+    PanelTab_Construction = 5
 };
 
 enum LoggingLevel
@@ -256,6 +257,7 @@ extern MyGUI::Button* g_statsTabButton;
 extern MyGUI::Button* g_teleportTabButton;
 extern MyGUI::Button* g_inventoryTabButton;
 extern MyGUI::Button* g_spawnTabButton;
+extern MyGUI::Button* g_constructionTabButton;
 extern MyGUI::TextBox* g_statesSectionText;
 extern MyGUI::Button* g_fullRestoreButton;
 extern MyGUI::Button* g_forceUnconsciousButton;
@@ -345,6 +347,10 @@ extern MyGUI::TextBox* g_spawnModeLabelText;
 extern MyGUI::ComboBox* g_spawnModeDropdown;
 extern MyGUI::TextBox* g_spawnPreviewText;
 extern MyGUI::Button* g_spawnCharactersButton;
+extern MyGUI::TextBox* g_constructionSectionText;
+extern MyGUI::TextBox* g_constructionSelectedText;
+extern MyGUI::TextBox* g_constructionStatusText;
+extern MyGUI::Button* g_constructionFinishButton;
 extern MyGUI::TextBox* g_dangerousSectionText;
 extern MyGUI::Button* g_forceDeadButton;
 extern MyGUI::Button* g_forceDyingButton;
@@ -396,6 +402,8 @@ void SetActivePanelTab(PanelTab tab);
 void RefreshStatusWidget();
 void SetActionButtonsEnabled(bool enabled);
 void SetSelectionActionButtonsEnabled(bool enabled);
+void ResetConstructionUiState();
+void RefreshConstructionUi(PlayerInterface* player);
 void ResetTargetSnapshot(TargetSnapshot* snapshot);
 void ApplyTargetSnapshotToUi(const TargetSnapshot& snapshot);
 void UpdateTargetInspection(PlayerInterface* player);
