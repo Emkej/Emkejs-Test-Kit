@@ -1898,7 +1898,7 @@ EMC_Result __cdecl SetPanelWidth(void*, int32_t value, char* errBuf, uint32_t er
         return EMC_ERR_CALLBACK_FAILED;
     }
 
-    RebuildPanelForWidthChange();
+    ApplyPanelLayout();
     CopyModHubErrorMessage(errBuf, errBufSize, 0);
     return EMC_OK;
 }
@@ -1921,7 +1921,7 @@ EMC_Result UpdateTabButtonWidthSetting(int* targetValue, int32_t value, char* er
         return EMC_ERR_CALLBACK_FAILED;
     }
 
-    RebuildPanelForWidthChange();
+    ApplyPanelLayout();
     CopyModHubErrorMessage(errBuf, errBufSize, 0);
     return EMC_OK;
 }

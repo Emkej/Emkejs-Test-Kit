@@ -21,6 +21,7 @@ namespace test_kit
 void ConfigureTextWidget(MyGUI::TextBox* widget);
 const char* ResolvePanelHeaderTitleFontName(int fontHeight);
 void ApplyPanelHeaderTitleFont();
+void ApplyPanelTabButtonLayout();
 
 namespace
 {
@@ -517,6 +518,8 @@ void ApplyPanelLayout(const MyGUI::IntCoord& panelCoord)
         g_bodyScrollView->setCoord(MyGUI::IntCoord(0, bodyTop, kPanelWidth, bodyHeight));
         g_bodyScrollView->setVisible(bodyVisible);
     }
+
+    ApplyPanelTabButtonLayout();
 
     UpdatePanelBodyWidgetVisibility(bodyVisible);
 
@@ -1639,6 +1642,38 @@ void ApplyPanelHeaderTitleFont()
     TrySetTextWidgetFontName(g_headerTitleText, ResolvePanelHeaderTitleFontName(g_panelHeaderTitleFontHeight));
 }
 
+void ApplyPanelTabButtonLayout()
+{
+    if (!g_healthTabButton || !g_statsTabButton || !g_teleportTabButton || !g_inventoryTabButton || !g_spawnTabButton
+        || !g_constructionTabButton)
+    {
+        return;
+    }
+
+    const int topTabRowWidth = g_healthTabButtonWidth + g_statsTabButtonWidth + g_teleportTabButtonWidth
+        + g_inventoryTabButtonWidth + g_spawnTabButtonWidth;
+    const int topTabRowLeft = std::max(0, (kPanelWidth - topTabRowWidth) / 2);
+    const int constructionTabLeft = std::max(0, (kPanelWidth - g_constructionTabButtonWidth) / 2);
+
+    g_healthTabButton->setCoord(BuildBodyCoord(topTabRowLeft + 0, 170, g_healthTabButtonWidth, 28));
+    g_statsTabButton->setCoord(
+        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth, 170, g_statsTabButtonWidth, 28));
+    g_teleportTabButton->setCoord(
+        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth + g_statsTabButtonWidth, 170, g_teleportTabButtonWidth, 28));
+    g_inventoryTabButton->setCoord(BuildBodyCoord(
+        topTabRowLeft + g_healthTabButtonWidth + g_statsTabButtonWidth + g_teleportTabButtonWidth,
+        170,
+        g_inventoryTabButtonWidth,
+        28));
+    g_spawnTabButton->setCoord(BuildBodyCoord(
+        topTabRowLeft + g_healthTabButtonWidth + g_statsTabButtonWidth + g_teleportTabButtonWidth
+            + g_inventoryTabButtonWidth,
+        170,
+        g_spawnTabButtonWidth,
+        28));
+    g_constructionTabButton->setCoord(BuildBodyCoord(constructionTabLeft, 198, g_constructionTabButtonWidth, 28));
+}
+
 void ApplyPanelLayout()
 {
     if (!g_panel)
@@ -1807,41 +1842,31 @@ void CreatePanelWidgets()
         "Kenshi_TextboxStandardText",
         BuildBodyCoord(184, 118, 156, 18),
         MyGUI::Align::Default);
-    const int topTabRowWidth = g_healthTabButtonWidth + g_statsTabButtonWidth + g_teleportTabButtonWidth
-        + g_inventoryTabButtonWidth + g_spawnTabButtonWidth;
-    const int topTabRowLeft = std::max(0, (kPanelWidth - topTabRowWidth) / 2);
-    const int constructionTabLeft = std::max(0, (kPanelWidth - g_constructionTabButtonWidth) / 2);
     g_healthTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(topTabRowLeft + 0, 170, g_healthTabButtonWidth, 28),
+        BuildBodyCoord(0, 170, g_healthTabButtonWidth, 28),
         MyGUI::Align::Default);
     g_statsTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth, 170, g_statsTabButtonWidth, 28),
+        BuildBodyCoord(0, 170, g_statsTabButtonWidth, 28),
         MyGUI::Align::Default);
     g_teleportTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth + g_statsTabButtonWidth, 170, g_teleportTabButtonWidth, 28),
+        BuildBodyCoord(0, 170, g_teleportTabButtonWidth, 28),
         MyGUI::Align::Default);
     g_inventoryTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth + g_statsTabButtonWidth + g_teleportTabButtonWidth,
-            170,
-            g_inventoryTabButtonWidth,
-            28),
+        BuildBodyCoord(0, 170, g_inventoryTabButtonWidth, 28),
         MyGUI::Align::Default);
     g_spawnTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(topTabRowLeft + g_healthTabButtonWidth + g_statsTabButtonWidth + g_teleportTabButtonWidth
-                + g_inventoryTabButtonWidth,
-            170,
-            g_spawnTabButtonWidth,
-            28),
+        BuildBodyCoord(0, 170, g_spawnTabButtonWidth, 28),
         MyGUI::Align::Default);
     g_constructionTabButton = bodyParent->createWidget<MyGUI::Button>(
         "Kenshi_Button1",
-        BuildBodyCoord(constructionTabLeft, 198, g_constructionTabButtonWidth, 28),
+        BuildBodyCoord(0, 198, g_constructionTabButtonWidth, 28),
         MyGUI::Align::Default);
+    ApplyPanelTabButtonLayout();
     g_statesSectionText = bodyParent->createWidget<MyGUI::TextBox>(
         "Kenshi_TextboxPaintedText",
         BuildBodyCoord(14, 236, kPanelWidth - 28, 20),
