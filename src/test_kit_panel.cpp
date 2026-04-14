@@ -14,6 +14,7 @@
 #include <mygui/MyGUI_InputManager.h>
 #include <mygui/MyGUI_RenderManager.h>
 
+#include <algorithm>
 #include <sstream>
 
 namespace test_kit
@@ -22,6 +23,7 @@ void ConfigureTextWidget(MyGUI::TextBox* widget);
 const char* ResolvePanelHeaderTitleFontName(int fontHeight);
 void ApplyPanelHeaderTitleFont();
 void ApplyPanelTabButtonLayout();
+void ApplyPanelResponsiveBodyLayout();
 
 namespace
 {
@@ -520,6 +522,7 @@ void ApplyPanelLayout(const MyGUI::IntCoord& panelCoord)
     }
 
     ApplyPanelTabButtonLayout();
+    ApplyPanelResponsiveBodyLayout();
 
     UpdatePanelBodyWidgetVisibility(bodyVisible);
 
@@ -1545,6 +1548,7 @@ void InitializePanelWidgets()
     g_headerFrame->eventMouseMove += MyGUI::newDelegate(&OnHeaderMouseMove);
     g_headerFrame->eventMouseButtonReleased += MyGUI::newDelegate(&OnHeaderMouseReleased);
 
+    ApplyPanelResponsiveBodyLayout();
     TargetSnapshot snapshot;
     ResetTargetSnapshot(&snapshot);
     ApplyTargetSnapshotToUi(snapshot);
@@ -1672,6 +1676,39 @@ void ApplyPanelTabButtonLayout()
         g_spawnTabButtonWidth,
         28));
     g_constructionTabButton->setCoord(BuildBodyCoord(constructionTabLeft, 198, g_constructionTabButtonWidth, 28));
+}
+
+void ApplyPanelResponsiveBodyLayout()
+{
+    const int bodyWidth = std::max(2, kPanelWidth - 40);
+    const int splitGap = 8;
+    const int leftColumnWidth = std::max(1, (bodyWidth - splitGap) / 2);
+    const int rightColumnWidth = std::max(1, bodyWidth - leftColumnWidth - splitGap);
+    const int leftColumnLeft = 20;
+    const int rightColumnLeft = leftColumnLeft + leftColumnWidth + splitGap;
+
+    const auto applySplitRow = [&](MyGUI::Widget* leftWidget, MyGUI::Widget* rightWidget, int top, int height) {
+        if (leftWidget)
+        {
+            leftWidget->setCoord(BuildBodyCoord(leftColumnLeft, top, leftColumnWidth, height));
+        }
+        if (rightWidget)
+        {
+            rightWidget->setCoord(BuildBodyCoord(rightColumnLeft, top, rightColumnWidth, height));
+        }
+    };
+
+    applySplitRow(g_targetNameText, g_targetFactionText, 74, 18);
+    applySplitRow(g_targetAlignmentText, g_targetMembershipText, 96, 18);
+    applySplitRow(g_targetStateText, g_noTargetText, 118, 18);
+    applySplitRow(g_damageLeftArmButton, g_damageRightArmButton, 348, 28);
+    applySplitRow(g_damageLeftLegButton, g_damageRightLegButton, 382, 28);
+    applySplitRow(g_itemQuantityEdit, g_spawnItemButton, 608, 28);
+    applySplitRow(g_moneyAmountEdit, g_addMoneyButton, 258, 28);
+    applySplitRow(g_statsCopyButton, g_statsPasteButton, 338, 28);
+    applySplitRow(g_spawnQuantityEdit, g_spawnRadiusDropdown, 554, 28);
+    applySplitRow(g_spawnAllegianceDropdown, g_spawnModeDropdown, 610, 30);
+    applySplitRow(g_spawnFactionDropdown, g_spawnCreatureAgeDropdown, 668, 30);
 }
 
 void ApplyPanelLayout()
