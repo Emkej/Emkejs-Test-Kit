@@ -1709,6 +1709,76 @@ void ApplyPanelResponsiveBodyLayout()
     applySplitRow(g_spawnQuantityEdit, g_spawnRadiusDropdown, 554, 28);
     applySplitRow(g_spawnAllegianceDropdown, g_spawnModeDropdown, 610, 30);
     applySplitRow(g_spawnFactionDropdown, g_spawnCreatureAgeDropdown, 668, 30);
+
+    if (g_saveLocationNameLabelText)
+    {
+        g_saveLocationNameLabelText->setCoord(BuildBodyCoord(20, 260, kPanelWidth - 40, 18));
+    }
+
+    if (g_saveLocationNameEdit)
+    {
+        g_saveLocationNameEdit->setCoord(BuildBodyCoord(20, 282, kPanelWidth - 40, 28));
+    }
+
+    if (g_saveSelectedLocationButton)
+    {
+        g_saveSelectedLocationButton->setCoord(BuildBodyCoord(20, 316, std::max(1, kPanelWidth - 76), 28));
+    }
+
+    if (g_savedLocationsSectionText)
+    {
+        g_savedLocationsSectionText->setCoord(BuildBodyCoord(14, 354, kPanelWidth - 60, 20));
+    }
+
+    if (g_savedLocationsCollapseButton)
+    {
+        g_savedLocationsCollapseButton->setCoord(BuildBodyCoord(kPanelWidth - 46, 322, 26, 28));
+    }
+
+    if (g_savedLocationsRowsRoot)
+    {
+        g_savedLocationsRowsRoot->setCoord(BuildBodyCoord(20, 382, kPanelWidth - 40, kSavedLocationsSectionContentHeight));
+    }
+
+    if (g_savedLocationSearchLabelText)
+    {
+        g_savedLocationSearchLabelText->setCoord(MyGUI::IntCoord(0, 0, kPanelWidth - 40, 18));
+    }
+
+    if (g_savedLocationSearchEdit)
+    {
+        g_savedLocationSearchEdit->setCoord(MyGUI::IntCoord(0, 22, kPanelWidth - 40, 28));
+    }
+
+    if (g_savedLocationsListBox)
+    {
+        g_savedLocationsListBox->setCoord(MyGUI::IntCoord(0, 56, kPanelWidth - 40, kSavedLocationsListHeight));
+    }
+
+    if (g_savedLocationsEmptyText)
+    {
+        g_savedLocationsEmptyText->setCoord(MyGUI::IntCoord(0, 56, kPanelWidth - 40, kSavedLocationEmptyHeight));
+    }
+
+    if (g_savedLocationTeleportButton)
+    {
+        g_savedLocationTeleportButton->setCoord(MyGUI::IntCoord(0, 182, 86, 28));
+    }
+
+    if (g_savedLocationPinButton)
+    {
+        g_savedLocationPinButton->setCoord(MyGUI::IntCoord(92, 182, 64, 28));
+    }
+
+    if (g_savedLocationRenameButton)
+    {
+        g_savedLocationRenameButton->setCoord(MyGUI::IntCoord(162, 182, 70, 28));
+    }
+
+    if (g_savedLocationDeleteButton)
+    {
+        g_savedLocationDeleteButton->setCoord(MyGUI::IntCoord(238, 182, 62, 28));
+    }
 }
 
 void ApplyPanelLayout()
