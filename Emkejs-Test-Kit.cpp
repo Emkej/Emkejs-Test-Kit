@@ -1467,11 +1467,10 @@ void OnSaveLoadTransitionStart(const char* source)
     if (source)
     {
         std::stringstream line;
-        line << "event=testkit_panel_destroyed reason=\"" << source << "\"";
+        line << "event=testkit_save_load_transition reason=\"" << source << "\"";
         LogInfoLine(line.str());
     }
 
-    DestroyPanel();
     g_lastPlayerInterface = 0;
     g_hotkeyPrevDown = false;
     g_lastStatusMessage = "Ready";
