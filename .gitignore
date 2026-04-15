@@ -17,6 +17,7 @@ build/
 dist/
 .boost-link-override/
 .boost-vc100/  # Boost library build artifacts
+Linkednpm-cache
 
 # Files
 *.obj
