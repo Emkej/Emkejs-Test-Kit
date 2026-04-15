@@ -32,6 +32,80 @@ $ctx = Initialize-KenshiScriptContext -InvocationPath $MyInvocation.MyCommand.Pa
 $resolved = Resolve-KenshiBuildContext -BoundParameters $PSBoundParameters -RepoDir $ctx.RepoDir -ModName $ModName -ProjectFileName $ProjectFileName -OutputSubdir $OutputSubdir -DllName $DllName -ModFileName $ModFileName -ConfigFileName $ConfigFileName -KenshiPath $KenshiPath -Configuration $Configuration -Platform $Platform
 $versionFile = Join-Path $ctx.RepoDir "VERSION"
 
+function Get-ImportedBoostRuntimeDllNames {
+    param(
+        [Parameter(Mandatory = $true)][string]$DllPath
+    )
+
+    if (-not (Test-Path $DllPath)) {
+        return @()
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($DllPath)
+    if (-not $bytes -or $bytes.Length -eq 0) {
+        return @()
+    }
+
+    $matches = @{}
+    $buffer = New-Object System.Collections.Generic.List[byte]
+
+    foreach ($value in $bytes) {
+        if ($value -ge 32 -and $value -le 126) {
+            $buffer.Add($value)
+            continue
+        }
+
+        if ($buffer.Count -gt 0) {
+            $text = [System.Text.Encoding]::ASCII.GetString($buffer.ToArray())
+            if ($text -match '^boost_[A-Za-z0-9_-]+\.dll$') {
+                $null = $matches[$text.ToLowerInvariant()] = $text
+            }
+            $buffer.Clear()
+        }
+    }
+
+    if ($buffer.Count -gt 0) {
+        $text = [System.Text.Encoding]::ASCII.GetString($buffer.ToArray())
+        if ($text -match '^boost_[A-Za-z0-9_-]+\.dll$') {
+            $null = $matches[$text.ToLowerInvariant()] = $text
+        }
+    }
+
+    return @($matches.GetEnumerator() | Sort-Object Name | ForEach-Object { $_.Value } | Select-Object -Unique)
+}
+
+function Copy-BoostRuntimeDependenciesToPackageSource {
+    param(
+        [Parameter(Mandatory = $true)][string]$DllPath,
+        [Parameter(Mandatory = $true)][string]$PackageSourcePath
+    )
+
+    $boostRuntimeDllSourceDir = $env:BOOST_RUNTIME_DLL_SOURCE_DIR
+    if ((-not $boostRuntimeDllSourceDir -or -not (Test-Path $boostRuntimeDllSourceDir)) -and $env:BOOST_INCLUDE_PATH) {
+        $boostStageLibDir = Join-Path $env:BOOST_INCLUDE_PATH "stage\lib"
+        if (Test-Path $boostStageLibDir) {
+            $boostRuntimeDllSourceDir = $boostStageLibDir
+        }
+    }
+
+    if (-not $boostRuntimeDllSourceDir -or -not (Test-Path $boostRuntimeDllSourceDir)) {
+        return
+    }
+
+    $boostRuntimeDllNames = Get-ImportedBoostRuntimeDllNames -DllPath $DllPath
+    foreach ($boostDllName in $boostRuntimeDllNames) {
+        $boostDllSource = Join-Path $boostRuntimeDllSourceDir $boostDllName
+        if (-not (Test-Path $boostDllSource)) {
+            Write-Host "WARNING: Imported Boost runtime DLL not found for packaging: $boostDllSource" -ForegroundColor Yellow
+            continue
+        }
+
+        $boostDllDest = Join-Path $PackageSourcePath $boostDllName
+        Copy-Item -Path $boostDllSource -Destination $boostDllDest -Force
+        Write-Host "Included runtime dependency in package staging: $boostDllSource -> $boostDllDest" -ForegroundColor Gray
+    }
+}
+
 function Remove-DeveloperModeConfigKeys {
     param(
         [Parameter(Mandatory = $true)][string]$Path
@@ -196,6 +270,8 @@ if (-not (Test-Path $packageSourcePath)) {
     Write-Host "ERROR: Mod folder not found: $packageSourcePath" -ForegroundColor Red
     return (Exit-KenshiScriptWithTimestamp -ExitCode 1)
 }
+
+Copy-BoostRuntimeDependenciesToPackageSource -DllPath $resolved.DllPath -PackageSourcePath $packageSourcePath
 
 $requiredFiles = @(
     $resolved.DllName,
