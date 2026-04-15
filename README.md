@@ -59,5 +59,12 @@ After deploy, expected files:
 - `start_collapsed`
 - `logging_level`
 - `confirm_dangerous_actions`
+- `panel_width`
+- `panel_min_expanded_height`
+- `panel_max_expanded_height`
+- `panel_header_title_font_height`
+- `panel_collapse_button_size`
+- `panel_close_button_size`
+- `panel_body_overlap`
 
 The in-game panel shell currently provides show/hide, collapse/expand, placeholder target summary text, shell action buttons, and an in-panel status line. Target inspection and real state forcing come in later plan steps.

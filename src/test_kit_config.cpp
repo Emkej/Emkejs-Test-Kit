@@ -48,14 +48,21 @@ namespace
 {
 const char* kModHubNamespaceId = "emkej.qol";
 const char* kModHubNamespaceDisplayName = "Emkej QoL";
-const char* kModHubModId = "emkejs_test_kit";
-const char* kModHubModDisplayName = "Emkejs Test Kit";
+const char* kModHubCoreModId = "emkejs_test_kit_core";
+const char* kModHubCoreModDisplayName = "Emkejs Test Kit";
+const char* kModHubLayoutSectionId = "layout";
+const char* kModHubLayoutSectionLabel = "Layout";
+const char* kModHubAdvancedSectionId = "advanced";
+const char* kModHubAdvancedSectionLabel = "Advanced";
 const char* kModHubTogglePanelKeyLabel = "Debug Panel Key";
 const char* kModHubTogglePanelKeyDescription =
     "Primary key for showing or hiding the debug panel. Use the modifier toggles below for Ctrl, Shift, and Alt. Unbind to disable.";
 const char* kModHubEnabledLabel = "Enabled";
 const char* kModHubEnabledDescription =
     "Basic master switch for the mod. Disabling it keeps Mod Hub settings visible but turns off the panel and hotkey behavior.";
+const char* kModHubConfirmDangerousActionsLabel = "Confirm Dangerous Actions";
+const char* kModHubConfirmDangerousActionsDescription =
+    "Require a second click before running dangerous health actions.";
 const char* kModHubTogglePanelCtrlLabel = "Require Ctrl";
 const char* kModHubTogglePanelCtrlDescription = "Require Ctrl for the debug panel hotkey.";
 const char* kModHubTogglePanelShiftLabel = "Require Shift";
@@ -95,6 +102,9 @@ const char* kModHubPanelCloseButtonSizeDescription =
 const char* kModHubPanelBodyOverlapLabel = "Header Body Overlap";
 const char* kModHubPanelBodyOverlapDescription =
     "How many pixels the panel body tucks under the header to hide the seam.";
+const char* kModHubDebugLoggingLabel = "Debug Logging";
+const char* kModHubDebugLoggingDescription =
+    "Enable debug-level test kit logs. Disable it to keep debug logs quiet.";
 const int kPanelTabButtonWidthLowerBound = 48;
 const int kPanelTabButtonWidthUpperBound = 180;
 const int kPanelHealthTabButtonWidthDefault = 60;
@@ -279,6 +289,50 @@ bool TryReplaceJsonBoolByKey(std::string* content, const char* key, bool value)
     return false;
 }
 
+bool TryUpsertJsonBoolByKey(std::string* content, const char* key, bool value)
+{
+    if (TryReplaceJsonBoolByKey(content, key, value))
+    {
+        return true;
+    }
+
+    if (!content || !key)
+    {
+        return false;
+    }
+
+    const std::string::size_type objectEnd = content->rfind('}');
+    if (objectEnd == std::string::npos)
+    {
+        return false;
+    }
+
+    std::string::size_type insertPos = objectEnd;
+    while (insertPos > 0
+        && std::isspace(static_cast<unsigned char>((*content)[insertPos - 1])) != 0)
+    {
+        --insertPos;
+    }
+
+    std::string::size_type previousPos = insertPos;
+    while (previousPos > 0
+        && std::isspace(static_cast<unsigned char>((*content)[previousPos - 1])) != 0)
+    {
+        --previousPos;
+    }
+
+    const bool needsComma = previousPos > 0 && (*content)[previousPos - 1] != '{';
+    std::stringstream insertion;
+    if (needsComma)
+    {
+        insertion << ",";
+    }
+    insertion << "\n  \"" << key << "\": " << (value ? "true" : "false");
+
+    content->insert(insertPos, insertion.str());
+    return true;
+}
+
 bool TryReplaceJsonStringByKey(std::string* content, const char* key, const std::string& value)
 {
     if (!content || !key)
@@ -329,6 +383,50 @@ bool TryReplaceJsonStringByKey(std::string* content, const char* key, const std:
 
     const std::string replacement = std::string("\"") + EscapeJsonStringValue(value) + "\"";
     content->replace(valuePos, endPos - valuePos + 1, replacement);
+    return true;
+}
+
+bool TryUpsertJsonStringByKey(std::string* content, const char* key, const std::string& value)
+{
+    if (TryReplaceJsonStringByKey(content, key, value))
+    {
+        return true;
+    }
+
+    if (!content || !key)
+    {
+        return false;
+    }
+
+    const std::string::size_type objectEnd = content->rfind('}');
+    if (objectEnd == std::string::npos)
+    {
+        return false;
+    }
+
+    std::string::size_type insertPos = objectEnd;
+    while (insertPos > 0
+        && std::isspace(static_cast<unsigned char>((*content)[insertPos - 1])) != 0)
+    {
+        --insertPos;
+    }
+
+    std::string::size_type previousPos = insertPos;
+    while (previousPos > 0
+        && std::isspace(static_cast<unsigned char>((*content)[previousPos - 1])) != 0)
+    {
+        --previousPos;
+    }
+
+    const bool needsComma = previousPos > 0 && (*content)[previousPos - 1] != '{';
+    std::stringstream insertion;
+    if (needsComma)
+    {
+        insertion << ",";
+    }
+    insertion << "\n  \"" << key << "\": \"" << EscapeJsonStringValue(value) << "\"";
+
+    content->insert(insertPos, insertion.str());
     return true;
 }
 
@@ -1563,11 +1661,13 @@ bool TrySaveTogglePanelHotkeyConfig(const char** outError)
         return false;
     }
 
-    if (!TryReplaceJsonBoolByKey(&configText, "enabled", g_pluginEnabled)
-        || !TryReplaceJsonStringByKey(&configText, "toggle_panel_key", g_togglePanelKey)
-        || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_ctrl", g_togglePanelRequireCtrl)
-        || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_shift", g_togglePanelRequireShift)
-        || !TryReplaceJsonBoolByKey(&configText, "toggle_panel_alt", g_togglePanelRequireAlt)
+    if (!TryUpsertJsonBoolByKey(&configText, "enabled", g_pluginEnabled)
+        || !TryUpsertJsonStringByKey(&configText, "toggle_panel_key", g_togglePanelKey)
+        || !TryUpsertJsonBoolByKey(&configText, "toggle_panel_ctrl", g_togglePanelRequireCtrl)
+        || !TryUpsertJsonBoolByKey(&configText, "toggle_panel_shift", g_togglePanelRequireShift)
+        || !TryUpsertJsonBoolByKey(&configText, "toggle_panel_alt", g_togglePanelRequireAlt)
+        || !TryUpsertJsonBoolByKey(&configText, "confirm_dangerous_actions", g_confirmDangerousActions)
+        || !TryUpsertJsonStringByKey(&configText, "logging_level", g_loggingLevel == LoggingLevel_Debug ? "debug" : "info")
         || !TryUpsertJsonIntByKey(&configText, "panel_width", kPanelWidth)
         || !TryUpsertJsonIntByKey(&configText, "health_tab_button_width", g_healthTabButtonWidth)
         || !TryUpsertJsonIntByKey(&configText, "stats_tab_button_width", g_statsTabButtonWidth)
@@ -1585,11 +1685,10 @@ bool TrySaveTogglePanelHotkeyConfig(const char** outError)
         return false;
     }
 
-    if (g_developerMode
-        && (!TryUpsertJsonIntByKey(&configText, "panel_header_title_font_height", g_panelHeaderTitleFontHeight)
-            || !TryUpsertJsonIntByKey(&configText, "panel_collapse_button_size", g_panelCollapseButtonSize)
-            || !TryUpsertJsonIntByKey(&configText, "panel_close_button_size", g_panelCloseButtonSize)
-            || !TryUpsertJsonIntByKey(&configText, "panel_body_overlap", g_panelBodyOverlap)))
+    if (!TryUpsertJsonIntByKey(&configText, "panel_header_title_font_height", g_panelHeaderTitleFontHeight)
+        || !TryUpsertJsonIntByKey(&configText, "panel_collapse_button_size", g_panelCollapseButtonSize)
+        || !TryUpsertJsonIntByKey(&configText, "panel_close_button_size", g_panelCloseButtonSize)
+        || !TryUpsertJsonIntByKey(&configText, "panel_body_overlap", g_panelBodyOverlap))
     {
         if (outError)
         {
@@ -1868,6 +1967,40 @@ EMC_Result __cdecl SetPluginEnabled(void*, int32_t value, char* errBuf, uint32_t
     else if (g_pluginEnabled && !g_panel && g_lastPlayerInterface)
     {
         CreatePanelWidgets();
+    }
+
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
+EMC_Result __cdecl GetConfirmDangerousActions(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_confirmDangerousActions ? 1 : 0;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetConfirmDangerousActions(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    if (value != 0 && value != 1)
+    {
+        CopyModHubErrorMessage(errBuf, errBufSize, "value_must_be_bool");
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    const bool previousValue = g_confirmDangerousActions;
+    g_confirmDangerousActions = value != 0;
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_confirmDangerousActions = previousValue;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
     }
 
     CopyModHubErrorMessage(errBuf, errBufSize, 0);
@@ -2210,11 +2343,45 @@ EMC_Result __cdecl SetPanelBodyOverlap(void*, int32_t value, char* errBuf, uint3
     return EMC_OK;
 }
 
+EMC_Result __cdecl GetDebugLogging(void*, int32_t* outValue)
+{
+    if (!outValue)
+    {
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    *outValue = g_loggingLevel == LoggingLevel_Debug ? 1 : 0;
+    return EMC_OK;
+}
+
+EMC_Result __cdecl SetDebugLogging(void*, int32_t value, char* errBuf, uint32_t errBufSize)
+{
+    if (value != 0 && value != 1)
+    {
+        CopyModHubErrorMessage(errBuf, errBufSize, "value_must_be_bool");
+        return EMC_ERR_INVALID_ARGUMENT;
+    }
+
+    const LoggingLevel previousValue = g_loggingLevel;
+    g_loggingLevel = value != 0 ? LoggingLevel_Debug : LoggingLevel_Info;
+
+    const char* saveError = "";
+    if (!TrySaveTogglePanelHotkeyConfig(&saveError))
+    {
+        g_loggingLevel = previousValue;
+        CopyModHubErrorMessage(errBuf, errBufSize, saveError);
+        return EMC_ERR_CALLBACK_FAILED;
+    }
+
+    CopyModHubErrorMessage(errBuf, errBufSize, 0);
+    return EMC_OK;
+}
+
 const EMC_ModDescriptorV1 kModHubModDescriptor = {
     kModHubNamespaceId,
     kModHubNamespaceDisplayName,
-    kModHubModId,
-    kModHubModDisplayName,
+    kModHubCoreModId,
+    kModHubCoreModDisplayName,
     0
 };
 
@@ -2234,6 +2401,15 @@ const EMC_BoolSettingDefV1 kModHubEnabledSetting = {
     0,
     &GetPluginEnabled,
     &SetPluginEnabled
+};
+
+const EMC_BoolSettingDefV1 kModHubConfirmDangerousActionsSetting = {
+    "confirm_dangerous_actions",
+    kModHubConfirmDangerousActionsLabel,
+    kModHubConfirmDangerousActionsDescription,
+    0,
+    &GetConfirmDangerousActions,
+    &SetConfirmDangerousActions
 };
 
 const EMC_BoolSettingDefV1 kModHubTogglePanelCtrlSetting = {
@@ -2445,55 +2621,48 @@ const EMC_IntSettingDefV2 kModHubPanelBodyOverlapSetting = {
     &SetPanelBodyOverlap
 };
 
-const emc::ModHubClientSettingRowV1 kModHubBaseRows[] = {
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubEnabledSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_KEYBIND, &kModHubTogglePanelKeySetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelCtrlSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelShiftSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubHealthTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubStatsTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubTeleportTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubInventoryTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubSpawnTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubConstructionTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMinHeightSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMaxHeightSetting }
+const EMC_BoolSettingDefV1 kModHubDebugLoggingSetting = {
+    "debug_logging",
+    kModHubDebugLoggingLabel,
+    kModHubDebugLoggingDescription,
+    0,
+    &GetDebugLogging,
+    &SetDebugLogging
 };
 
-const emc::ModHubClientSettingRowV1 kModHubDeveloperRows[] = {
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubEnabledSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_KEYBIND, &kModHubTogglePanelKeySetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelCtrlSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelShiftSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, &kModHubTogglePanelAltSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubHealthTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubStatsTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubTeleportTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubInventoryTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubSpawnTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubConstructionTabWidthSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMinHeightSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelMaxHeightSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelHeaderTitleFontHeightSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelCollapseButtonSizeSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelCloseButtonSizeSetting },
-    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, &kModHubPanelBodyOverlapSetting }
+const emc::ModHubClientSettingRowV1 kModHubRows[] = {
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, "enabled", &kModHubEnabledSetting, 0, 0 },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_KEYBIND, "toggle_panel_key", &kModHubTogglePanelKeySetting, 0, 0 },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, "toggle_panel_ctrl", &kModHubTogglePanelCtrlSetting, 0, 0 },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, "toggle_panel_shift", &kModHubTogglePanelShiftSetting, 0, 0 },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, "toggle_panel_alt", &kModHubTogglePanelAltSetting, 0, 0 },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, "confirm_dangerous_actions", &kModHubConfirmDangerousActionsSetting, 0, 0 },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "panel_width", &kModHubPanelWidthSetting, kModHubLayoutSectionId, kModHubLayoutSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "health_tab_button_width", &kModHubHealthTabWidthSetting, kModHubLayoutSectionId, kModHubLayoutSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "stats_tab_button_width", &kModHubStatsTabWidthSetting, kModHubLayoutSectionId, kModHubLayoutSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "teleport_tab_button_width", &kModHubTeleportTabWidthSetting, kModHubLayoutSectionId, kModHubLayoutSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "inventory_tab_button_width", &kModHubInventoryTabWidthSetting, kModHubLayoutSectionId, kModHubLayoutSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "spawn_tab_button_width", &kModHubSpawnTabWidthSetting, kModHubLayoutSectionId, kModHubLayoutSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "construction_tab_button_width", &kModHubConstructionTabWidthSetting, kModHubLayoutSectionId, kModHubLayoutSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "panel_min_expanded_height", &kModHubPanelMinHeightSetting, kModHubLayoutSectionId, kModHubLayoutSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "panel_max_expanded_height", &kModHubPanelMaxHeightSetting, kModHubLayoutSectionId, kModHubLayoutSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "panel_header_title_font_height", &kModHubPanelHeaderTitleFontHeightSetting, kModHubAdvancedSectionId, kModHubAdvancedSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "panel_collapse_button_size", &kModHubPanelCollapseButtonSizeSetting, kModHubAdvancedSectionId, kModHubAdvancedSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "panel_close_button_size", &kModHubPanelCloseButtonSizeSetting, kModHubAdvancedSectionId, kModHubAdvancedSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_INT_V2, "panel_body_overlap", &kModHubPanelBodyOverlapSetting, kModHubAdvancedSectionId, kModHubAdvancedSectionLabel },
+    { emc::MOD_HUB_CLIENT_SETTING_KIND_BOOL, "debug_logging", &kModHubDebugLoggingSetting, kModHubAdvancedSectionId, kModHubAdvancedSectionLabel }
 };
 
-const emc::ModHubClientTableRegistrationV1 kModHubBaseRegistration = {
+const emc::ModHubClientTableRegistrationV1 kModHubRegistration = {
     &kModHubModDescriptor,
-    kModHubBaseRows,
-    static_cast<uint32_t>(sizeof(kModHubBaseRows) / sizeof(kModHubBaseRows[0]))
+    kModHubRows,
+    static_cast<uint32_t>(sizeof(kModHubRows) / sizeof(kModHubRows[0]))
 };
 
-const emc::ModHubClientTableRegistrationV1 kModHubDeveloperRegistration = {
-    &kModHubModDescriptor,
-    kModHubDeveloperRows,
-    static_cast<uint32_t>(sizeof(kModHubDeveloperRows) / sizeof(kModHubDeveloperRows[0]))
-};
+EMC_Result __cdecl RegisterModHubSettingsTables(const EMC_HubApiV1* api, void*)
+{
+    return emc::RegisterSettingsTableV1(api, &kModHubRegistration);
+}
 
 void LogModHubClientAttemptResult(const char* phase, emc::ModHubClient::AttemptResult result)
 {
@@ -2870,7 +3039,7 @@ void EnsureModHubClientConfigured()
     }
 
     emc::ModHubClient::Config config;
-    config.table_registration = g_developerMode ? &kModHubDeveloperRegistration : &kModHubBaseRegistration;
+    config.register_fn = &RegisterModHubSettingsTables;
     g_modHubClient.SetConfig(config);
     g_modHubClientConfigured = true;
 }
