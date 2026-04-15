@@ -5,6 +5,7 @@
 #include <kenshi/GameDataManager.h>
 #include <kenshi/GameWorld.h>
 #include <kenshi/Globals.h>
+#include <kenshi/RootObjectFactory.h>
 
 #include <algorithm>
 #include <cctype>
@@ -22,6 +23,16 @@ bool g_inventoryQualitySyncInProgress = false;
 bool IsInventoryWeaponDataType(const GameData* itemData)
 {
     return itemData && (itemData->type == WEAPON || itemData->type == CROSSBOW);
+}
+
+bool IsInventoryArmourDataType(const GameData* itemData)
+{
+    return itemData && itemData->type == ARMOUR;
+}
+
+bool IsInventoryQualitySelectableDataType(const GameData* itemData)
+{
+    return IsInventoryWeaponDataType(itemData) || IsInventoryArmourDataType(itemData);
 }
 
 std::string BuildInventoryQualityLabel(const GameData* data, const char* fallbackPrefix)
@@ -215,6 +226,111 @@ bool TryBuildDefaultWeaponQualitySelection(
     return true;
 }
 
+typedef boost::unordered::unordered_map<
+    std::string,
+    Ogre::vector<GameDataReference>::type,
+    boost::hash<std::string>,
+    std::equal_to<std::string>,
+    Ogre::STLAllocator<
+        std::pair<std::string const, Ogre::vector<GameDataReference>::type>,
+        Ogre::GeneralAllocPolicy> >
+    GameDataReferenceLists;
+
+bool TryGetInventorySpawnArmourReferenceLevel(
+    GameData* itemData,
+    GameData* materialData,
+    const std::string& listName,
+    int* outLevel)
+{
+    if (outLevel)
+    {
+        *outLevel = 0;
+    }
+
+    if (!itemData || !materialData || !outLevel || !ou || !ou->theFactory)
+    {
+        return false;
+    }
+
+    const TripleInt values = ou->theFactory->getValsFromDataInList(itemData, materialData, listName);
+    if (values.value[0] > 0)
+    {
+        *outLevel = values.value[0];
+    }
+
+    return true;
+}
+
+bool TryBuildDefaultArmourQualitySelection(
+    GameData* itemData,
+    InventorySpawnWeaponQualitySelection* outSelection)
+{
+    if (!itemData || !outSelection)
+    {
+        return false;
+    }
+
+    outSelection->manufacturerData = 0;
+    outSelection->modelData = 0;
+    outSelection->weaponLevel = 0;
+    outSelection->label = "Default";
+    outSelection->usesDefaultBehavior = true;
+
+    if (!ou || !ou->theFactory)
+    {
+        return true;
+    }
+
+    for (GameDataReferenceLists::const_iterator iter = itemData->objectReferences.begin();
+         iter != itemData->objectReferences.end();
+         ++iter)
+    {
+        GameData* materialData = ou->theFactory->chooseDataFromList(
+            itemData,
+            iter->first,
+            MATERIAL_SPECS_CLOTHING,
+            0);
+        if (!materialData)
+        {
+            continue;
+        }
+
+        int armourLevel = 0;
+        TryGetInventorySpawnArmourReferenceLevel(itemData, materialData, iter->first, &armourLevel);
+
+        outSelection->modelData = materialData;
+        outSelection->weaponLevel = armourLevel;
+        outSelection->label = BuildInventoryQualityLabel(materialData, "Quality");
+        return true;
+    }
+
+    return true;
+}
+
+bool TryBuildDefaultInventoryQualitySelection(
+    GameData* itemData,
+    InventorySpawnWeaponQualitySelection* outSelection)
+{
+    if (IsInventoryWeaponDataType(itemData))
+    {
+        return TryBuildDefaultWeaponQualitySelection(itemData, outSelection);
+    }
+
+    if (IsInventoryArmourDataType(itemData))
+    {
+        return TryBuildDefaultArmourQualitySelection(itemData, outSelection);
+    }
+
+    if (!outSelection)
+    {
+        return false;
+    }
+
+    *outSelection = InventorySpawnWeaponQualitySelection();
+    outSelection->label = "Default";
+    return true;
+}
+
 bool HasManufacturerAlready(
     const std::vector<GameData*>& manufacturers,
     GameData* manufacturerData)
@@ -300,6 +416,11 @@ bool HasMatchingExplicitQualityOption(
     return false;
 }
 
+int GetInventorySpawnQualityOptionLevel(const GameDataReference& reference, int fallbackLevel)
+{
+    return reference.values.value[0] > 0 ? reference.values.value[0] : fallbackLevel;
+}
+
 void AppendManufacturerWeaponQualityOptions(
     GameData* manufacturerData,
     std::vector<InventorySpawnQualityOption>* outOptions)
@@ -331,9 +452,8 @@ void AppendManufacturerWeaponQualityOptions(
             continue;
         }
 
-        const int weaponLevel = iter->values.value[0] > 0
-            ? iter->values.value[0]
-            : GetInventorySpawnWeaponLevel(manufacturerData, modelData);
+        const int weaponLevel =
+            GetInventorySpawnQualityOptionLevel(*iter, GetInventorySpawnWeaponLevel(manufacturerData, modelData));
         if (HasMatchingExplicitQualityOption(*outOptions, manufacturerData, modelData, weaponLevel))
         {
             continue;
@@ -348,6 +468,81 @@ void AppendManufacturerWeaponQualityOptions(
         option.isDefault = false;
         outOptions->push_back(option);
     }
+}
+
+void AppendArmourQualityOptions(
+    GameData* itemData,
+    std::vector<InventorySpawnQualityOption>* outOptions)
+{
+    if (!itemData || !outOptions || !ou)
+    {
+        return;
+    }
+
+    for (GameDataReferenceLists::const_iterator listIter = itemData->objectReferences.begin();
+         listIter != itemData->objectReferences.end();
+         ++listIter)
+    {
+        const Ogre::vector<GameDataReference>::type& refs = listIter->second;
+        for (Ogre::vector<GameDataReference>::type::const_iterator refIter = refs.begin();
+             refIter != refs.end();
+             ++refIter)
+        {
+            if (refIter->sid.empty())
+            {
+                continue;
+            }
+
+            GameData* materialData = ou->gamedata.getData(refIter->sid, MATERIAL_SPECS_CLOTHING);
+            if (!materialData)
+            {
+                continue;
+            }
+
+            int armourLevel = 0;
+            TryGetInventorySpawnArmourReferenceLevel(itemData, materialData, listIter->first, &armourLevel);
+            armourLevel = GetInventorySpawnQualityOptionLevel(*refIter, armourLevel);
+            if (HasMatchingExplicitQualityOption(*outOptions, 0, materialData, armourLevel))
+            {
+                continue;
+            }
+
+            InventorySpawnQualityOption option;
+            option.label = BuildInventoryQualityLabel(materialData, "Quality");
+            option.normalizedLabel = NormalizeInventoryQualityLabel(option.label);
+            option.manufacturerData = 0;
+            option.modelData = materialData;
+            option.weaponLevel = armourLevel;
+            option.isDefault = false;
+            outOptions->push_back(option);
+        }
+    }
+}
+
+std::string BuildInventoryQualityDisambiguator(const InventorySpawnQualityOption& option)
+{
+    if (option.manufacturerData)
+    {
+        return BuildInventoryQualityLabel(option.manufacturerData, "Manufacturer");
+    }
+
+    if (option.weaponLevel > 0)
+    {
+        std::stringstream label;
+        label << "Level " << option.weaponLevel;
+        return label.str();
+    }
+
+    if (option.modelData)
+    {
+        const std::string sid = TrimAscii(option.modelData->stringID);
+        if (!sid.empty())
+        {
+            return sid;
+        }
+    }
+
+    return "";
 }
 
 void DisambiguateDuplicateQualityLabels(std::vector<InventorySpawnQualityOption>* options)
@@ -381,13 +576,13 @@ void DisambiguateDuplicateQualityLabels(std::vector<InventorySpawnQualityOption>
             continue;
         }
 
-        const std::string manufacturerLabel = BuildInventoryQualityLabel(left.manufacturerData, "Manufacturer");
-        if (manufacturerLabel.empty())
+        const std::string disambiguator = BuildInventoryQualityDisambiguator(left);
+        if (disambiguator.empty())
         {
             continue;
         }
 
-        left.label += " (" + manufacturerLabel + ")";
+        left.label += " (" + disambiguator + ")";
     }
 }
 
@@ -445,26 +640,32 @@ void RefreshInventoryQualityOptions()
     }
 
     GameData* itemData = 0;
-    if (!TryResolveSelectedInventoryItem(&itemData, 0) || !IsInventoryWeaponDataType(itemData))
+    if (!TryResolveSelectedInventoryItem(&itemData, 0) || !IsInventoryQualitySelectableDataType(itemData))
     {
         PopulateInventoryQualityDropdownDefaultState();
         return;
     }
 
     InventorySpawnWeaponQualitySelection defaultSelection;
-    if (!TryBuildDefaultWeaponQualitySelection(itemData, &defaultSelection))
+    if (!TryBuildDefaultInventoryQualitySelection(itemData, &defaultSelection))
     {
         PopulateInventoryQualityDropdownDefaultState();
         return;
     }
 
-    std::vector<GameData*> candidateManufacturers;
-    CollectCandidateManufacturers(itemData, &candidateManufacturers);
-
     std::vector<InventorySpawnQualityOption> nextOptions;
-    for (size_t index = 0; index < candidateManufacturers.size(); ++index)
+    if (IsInventoryWeaponDataType(itemData))
     {
-        AppendManufacturerWeaponQualityOptions(candidateManufacturers[index], &nextOptions);
+        std::vector<GameData*> candidateManufacturers;
+        CollectCandidateManufacturers(itemData, &candidateManufacturers);
+        for (size_t index = 0; index < candidateManufacturers.size(); ++index)
+        {
+            AppendManufacturerWeaponQualityOptions(candidateManufacturers[index], &nextOptions);
+        }
+    }
+    else if (IsInventoryArmourDataType(itemData))
+    {
+        AppendArmourQualityOptions(itemData, &nextOptions);
     }
 
     DisambiguateDuplicateQualityLabels(&nextOptions);
@@ -569,13 +770,13 @@ bool TryResolveSelectedInventoryWeaponQuality(
     *outSelection = InventorySpawnWeaponQualitySelection();
     outSelection->label = "Default";
 
-    if (!IsInventoryWeaponDataType(itemData))
+    if (!IsInventoryQualitySelectableDataType(itemData))
     {
         return true;
     }
 
     InventorySpawnWeaponQualitySelection defaultSelection;
-    if (!TryBuildDefaultWeaponQualitySelection(itemData, &defaultSelection))
+    if (!TryBuildDefaultInventoryQualitySelection(itemData, &defaultSelection))
     {
         return true;
     }

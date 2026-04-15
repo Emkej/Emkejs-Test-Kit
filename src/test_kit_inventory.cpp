@@ -1545,6 +1545,62 @@ Item* TryCreateInventorySpawnWeaponItem(
     return 0;
 }
 
+Item* TryCreateInventorySpawnArmourItem(
+    GameData* itemData,
+    const hand& ownerHandle,
+    GameData* materialData,
+    int armourLevel,
+    int itemIndex)
+{
+    struct ArmourCreateAttempt
+    {
+        const char* label;
+        GameData* materialData;
+        int level;
+        bool useEmptyOwnerHandle;
+    };
+
+    const ArmourCreateAttempt attempts[] = {
+        {"material_level_empty_owner", materialData, armourLevel, true},
+        {"material_level_owner", materialData, armourLevel, false},
+        {"material_zero_empty_owner", materialData, 0, true},
+        {"material_zero_owner", materialData, 0, false},
+        {"null_zero_empty_owner", 0, 0, true},
+        {"null_zero_owner", 0, 0, false},
+    };
+
+    for (size_t attemptIndex = 0; attemptIndex < sizeof(attempts) / sizeof(attempts[0]); ++attemptIndex)
+    {
+        const ArmourCreateAttempt& attempt = attempts[attemptIndex];
+        const hand& createOwnerHandle = attempt.useEmptyOwnerHandle ? hand() : ownerHandle;
+
+        {
+            std::stringstream line;
+            line << "armour_create_try"
+                 << " iteration=" << itemIndex
+                 << " attempt=\"" << attempt.label << "\""
+                 << " material=\"" << SanitizeLogValue(attempt.materialData ? attempt.materialData->stringID : "") << "\""
+                 << " level=" << attempt.level
+                 << " empty_owner=" << (attempt.useEmptyOwnerHandle ? "true" : "false");
+            LogInvestigateInventorySpawnLine(line.str());
+        }
+
+        Item* item = ou->theFactory->createItem(itemData, createOwnerHandle, 0, attempt.materialData, attempt.level, 0);
+        if (item)
+        {
+            std::stringstream line;
+            line << "armour_create_try_success"
+                 << " iteration=" << itemIndex
+                 << " attempt=\"" << attempt.label << "\""
+                 << " item_ptr=" << item;
+            LogInvestigateInventorySpawnLine(line.str());
+            return item;
+        }
+    }
+
+    return 0;
+}
+
 const char* GetInvestigateInventorySpawnStageLabel(int stage)
 {
     switch (stage)
@@ -1554,11 +1610,11 @@ const char* GetInvestigateInventorySpawnStageLabel(int stage)
     case 2:
         return "count_before";
     case 3:
-        return "weapon_create_item";
+        return "gear_create_item";
     case 4:
-        return "weapon_give_item";
+        return "gear_give_item";
     case 5:
-        return "weapon_section_fallback";
+        return "gear_section_fallback";
     case 6:
         return "general_create_item";
     case 7:
@@ -1634,28 +1690,30 @@ bool TrySpawnItemInTargetInventoryImpl(
     }
 
     const bool weaponPath = IsInventorySpawnWeaponDataType(itemData);
+    const bool armourPath = IsInventorySpawnArmourDataType(itemData);
+    const bool qualityPath = weaponPath || armourPath;
     const int beforeCount = CountInventoryItemsByGameData(inventory, itemData);
     *investigateStageOut = 2;
     bool addAccepted = false;
     int deliveredCount = 0;
     const hand& ownerHandle = target->getHandle();
     GameData* weaponManufacturerData = 0;
-    GameData* weaponModelData = 0;
-    int weaponLevel = 0;
-    if (weaponPath)
+    GameData* qualityMaterialData = 0;
+    int qualityLevel = 0;
+    if (qualityPath)
     {
         if (weaponQualitySelection)
         {
             weaponManufacturerData = weaponQualitySelection->manufacturerData;
-            weaponModelData = weaponQualitySelection->modelData;
-            weaponLevel = weaponQualitySelection->weaponLevel;
+            qualityMaterialData = weaponQualitySelection->modelData;
+            qualityLevel = weaponQualitySelection->weaponLevel;
         }
 
-        if (!weaponManufacturerData && !weaponModelData && weaponLevel <= 0)
+        if (weaponPath && !weaponManufacturerData && !qualityMaterialData && qualityLevel <= 0)
         {
             weaponManufacturerData = GetInventorySpawnWeaponManufacturerData(itemData);
-            weaponModelData = GetInventorySpawnWeaponModelData(itemData, weaponManufacturerData);
-            weaponLevel = GetInventorySpawnWeaponLevel(weaponManufacturerData, weaponModelData);
+            qualityMaterialData = GetInventorySpawnWeaponModelData(itemData, weaponManufacturerData);
+            qualityLevel = GetInventorySpawnWeaponLevel(weaponManufacturerData, qualityMaterialData);
         }
     }
     const bool targetHasRoom = target->hasRoomForItem(itemData);
@@ -1668,11 +1726,12 @@ bool TrySpawnItemInTargetInventoryImpl(
              << " item_type=" << static_cast<int>(itemData->type)
              << " quantity=" << quantity
              << " weapon_path=" << (weaponPath ? "true" : "false")
+             << " armour_path=" << (armourPath ? "true" : "false")
              << " target_has_room=" << (targetHasRoom ? "true" : "false")
              << " inventory_has_room=" << (inventoryHasRoom ? "true" : "false")
              << " weapon_manufacturer=\"" << SanitizeLogValue(weaponManufacturerData ? weaponManufacturerData->stringID : "") << "\""
-             << " weapon_model=\"" << SanitizeLogValue(weaponModelData ? weaponModelData->stringID : "") << "\""
-             << " weapon_level=" << weaponLevel
+             << " quality_material=\"" << SanitizeLogValue(qualityMaterialData ? qualityMaterialData->stringID : "") << "\""
+             << " quality_level=" << qualityLevel
              << " before_count=" << beforeCount;
         LogInvestigateInventorySpawnLine(line.str());
     }
@@ -1689,8 +1748,8 @@ bool TrySpawnItemInTargetInventoryImpl(
                 itemData,
                 ownerHandle,
                 weaponManufacturerData,
-                weaponModelData,
-                weaponLevel,
+                qualityMaterialData,
+                qualityLevel,
                 itemIndex);
             if (!item)
             {
@@ -1700,7 +1759,7 @@ bool TrySpawnItemInTargetInventoryImpl(
                      << " iteration=" << itemIndex
                      << " item_name=\"" << SanitizeLogValue(BuildInventorySpawnOptionLabel(itemData)) << "\""
                      << " weapon_manufacturer=\"" << SanitizeLogValue(weaponManufacturerData ? weaponManufacturerData->stringID : "") << "\""
-                     << " weapon_model=\"" << SanitizeLogValue(weaponModelData ? weaponModelData->stringID : "") << "\"";
+                     << " weapon_model=\"" << SanitizeLogValue(qualityMaterialData ? qualityMaterialData->stringID : "") << "\"";
                 LogInvestigateInventorySpawnLine(line.str());
                 return false;
             }
@@ -1736,6 +1795,74 @@ bool TrySpawnItemInTargetInventoryImpl(
             {
                 std::stringstream line;
                 line << "weapon_section_fallback"
+                     << " iteration=" << itemIndex
+                     << " accepted=" << (fallbackAccepted ? "true" : "false")
+                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
+                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            if (!giveAccepted && !fallbackAccepted)
+            {
+                addAccepted = false;
+                break;
+            }
+
+            ++deliveredCount;
+        }
+    }
+    else if (armourPath)
+    {
+        addAccepted = true;
+        for (int itemIndex = 0; itemIndex < quantity; ++itemIndex)
+        {
+            *investigateIterationOut = itemIndex;
+            *investigateStageOut = 3;
+            Item* item =
+                TryCreateInventorySpawnArmourItem(itemData, ownerHandle, qualityMaterialData, qualityLevel, itemIndex);
+            if (!item)
+            {
+                std::stringstream line;
+                line << "armour_create_item_null"
+                     << " iteration=" << itemIndex
+                     << " item_name=\"" << SanitizeLogValue(BuildInventorySpawnOptionLabel(itemData)) << "\""
+                     << " material=\"" << SanitizeLogValue(qualityMaterialData ? qualityMaterialData->stringID : "") << "\""
+                     << " level=" << qualityLevel;
+                LogInvestigateInventorySpawnLine(line.str());
+                return false;
+            }
+
+            {
+                std::stringstream line;
+                line << "armour_created"
+                     << " iteration=" << itemIndex
+                     << " item_ptr=" << item
+                     << " quantity_field=" << item->quantity
+                     << " width=" << item->itemWidth
+                     << " height=" << item->itemHeight
+                     << " section=\"" << SanitizeLogValue(item->inventorySection) << "\"";
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            *investigateStageOut = 4;
+            const bool giveAccepted = target->giveItem(item, false, true);
+            {
+                std::stringstream line;
+                line << "armour_give_item"
+                     << " iteration=" << itemIndex
+                     << " accepted=" << (giveAccepted ? "true" : "false")
+                     << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
+                     << " is_in_inventory=" << (item->isInInventory ? "true" : "false");
+                LogInvestigateInventorySpawnLine(line.str());
+            }
+
+            *investigateStageOut = 5;
+            const bool fallbackAccepted =
+                giveAccepted ? false : TryAddCreatedItemToInventorySections(inventory, item);
+            if (!giveAccepted)
+            {
+                std::stringstream line;
+                line << "armour_section_fallback"
                      << " iteration=" << itemIndex
                      << " accepted=" << (fallbackAccepted ? "true" : "false")
                      << " section_after=\"" << SanitizeLogValue(item->inventorySection) << "\""
@@ -1853,7 +1980,7 @@ bool TrySpawnItemInTargetInventoryImpl(
     }
     if (deliveredCountOut)
     {
-        if (!weaponPath)
+        if (!qualityPath)
         {
             int observedDeliveredCount = afterCount - beforeCount;
             if (observedDeliveredCount < 0)
@@ -2339,7 +2466,7 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
         return;
     }
 
-    const bool weaponPath = IsInventorySpawnWeaponDataType(itemData);
+    const bool qualityPath = IsInventorySpawnWeaponDataType(itemData) || IsInventorySpawnArmourDataType(itemData);
     InventorySpawnWeaponQualitySelection weaponQualitySelection;
     if (!TryResolveSelectedInventoryWeaponQuality(itemData, &weaponQualitySelection))
     {
@@ -2361,7 +2488,7 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
                << " target_name=\"" << SanitizeLogValue(g_lastTargetSnapshot.name) << "\""
                << " quantity_text=\"" << SanitizeLogValue(quantityText) << "\""
                << " item_name=\"" << SanitizeLogValue(itemLabel) << "\"";
-        if (weaponPath)
+        if (qualityPath)
         {
             result << " quality=\"" << SanitizeLogValue(weaponQualitySelection.label) << "\""
                    << " quality_mode=\"" << (weaponQualitySelection.usesDefaultBehavior ? "default" : "explicit")
@@ -2394,7 +2521,7 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
                << " target_name=\"" << SanitizeLogValue(targetName) << "\""
                << " item_name=\"" << SanitizeLogValue(itemLabel) << "\""
                << " quantity=" << quantity;
-        if (weaponPath)
+        if (qualityPath)
         {
             result << " quality=\"" << SanitizeLogValue(weaponQualitySelection.label) << "\""
                    << " quality_mode=\"" << (weaponQualitySelection.usesDefaultBehavior ? "default" : "explicit")
@@ -2421,7 +2548,7 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
            << " before_count=" << beforeCount
            << " after_count=" << afterCount
            << " observed_delta=" << observedDelta;
-    if (weaponPath)
+    if (qualityPath)
     {
         result << " quality=\"" << SanitizeLogValue(weaponQualitySelection.label) << "\""
                << " quality_mode=\"" << (weaponQualitySelection.usesDefaultBehavior ? "default" : "explicit")
@@ -2445,7 +2572,7 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
     {
         std::stringstream status;
         status << "Spawned " << quantity << " " << itemLabel << " for " << targetName;
-        if (weaponPath)
+        if (qualityPath)
         {
             status << " (quality: " << weaponQualitySelection.label << ")";
         }
@@ -2458,7 +2585,7 @@ void OnSpawnItemButtonClicked(MyGUI::Widget*)
         std::stringstream status;
         status << "Spawned " << deliveredCount << " of " << quantity << " " << itemLabel
                << " for " << targetName << " - inventory full";
-        if (weaponPath)
+        if (qualityPath)
         {
             status << " (quality: " << weaponQualitySelection.label << ")";
         }
