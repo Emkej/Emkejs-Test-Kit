@@ -58,7 +58,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;PLUGIN_ENABLE_VERBOSE_DIAGNOSTICS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;PLUGIN_ENABLE_VERBOSE_DIAGNOSTICS=1;BOOST_ALL_NO_LIB;BOOST_SYSTEM_NO_LIB;BOOST_ERROR_CODE_HEADER_ONLY;BOOST_SYSTEM_NO_DEPRECATED;BOOST_THREAD_NO_LIB;BOOST_CHRONO_NO_LIB;BOOST_DATE_TIME_NO_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <ForcedIncludeFiles>$(KENSHILIB_DIR)\Include\kenshi\util\OgreUnordered.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
     </ClCompile>
@@ -74,7 +74,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;BOOST_ALL_NO_LIB;BOOST_SYSTEM_NO_LIB;BOOST_ERROR_CODE_HEADER_ONLY;BOOST_SYSTEM_NO_DEPRECATED;BOOST_THREAD_NO_LIB;BOOST_CHRONO_NO_LIB;BOOST_DATE_TIME_NO_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <ForcedIncludeFiles>$(KENSHILIB_DIR)\Include\kenshi\util\OgreUnordered.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
     </ClCompile>
