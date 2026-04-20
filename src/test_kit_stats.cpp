@@ -301,7 +301,7 @@ bool IsStatsSectionBatchSelectionActive(StatsSectionFilter* sectionOut)
         return false;
     }
 
-    if (g_filteredStatsRegistryIndexes[selectedIndex] != -1 || g_activeStatsSectionFilter == StatsSectionFilter_All)
+    if (g_filteredStatsRegistryIndexes[selectedIndex] != -1)
     {
         return false;
     }
@@ -335,11 +335,6 @@ void CollectStatsEntriesForSectionFilter(StatsSectionFilter section, std::vector
     }
 
     outEntries->clear();
-    if (section == StatsSectionFilter_All)
-    {
-        return;
-    }
-
     for (size_t index = 0; index < GetStatsRegistryCount(); ++index)
     {
         if (DoesStatsEntryMatchSectionFilter(kStatsRegistry[index], section))
@@ -1001,8 +996,7 @@ void RefreshStatsList()
     {
         searchUpper = ToUpperAscii(TrimAscii(g_statsSearchEdit->getOnlyText().asUTF8()));
     }
-    const bool showSectionBatchEntry =
-        searchUpper.empty() && g_activeStatsSectionFilter != StatsSectionFilter_All;
+    const bool showSectionBatchEntry = searchUpper.empty();
     const bool includeGroupingHint =
         g_activeStatsSectionFilter == StatsSectionFilter_All
         || g_activeStatsSectionFilter == StatsSectionFilter_CommonTest;
